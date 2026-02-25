@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.venv/
+venv/
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/*.log
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+
+# Project outputs
+outputs/
+
+# Large medical datasets (keep local, do NOT commit)
+manifest-1600709154662/
+LIDC-XML-only/
