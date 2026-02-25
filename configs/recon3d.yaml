@@ -1,0 +1,31 @@
+seed: 42
+
+data:
+  splits_path: d:/AI_LUNG/outputs/splits/patient_split.json
+  hu_min: -1000
+  hu_max: 400
+  patch_size: [32, 96, 96]
+  patches_per_volume:
+    train: 12
+    val: 6
+  noise_std: 0.03
+  max_cases_per_split:
+    train: 10
+    val: 3
+
+model:
+  base_channels: 16
+  l1_weight: 1.0
+  grad_weight: 0.2
+  range_weight: 0.05
+
+train:
+  batch_size: 2
+  num_workers: 0
+  epochs: 2
+  learning_rate: 0.0002
+  weight_decay: 0.00001
+  output_dir: d:/AI_LUNG/outputs/train_runs/recon3d
+
+runtime:
+  device: auto

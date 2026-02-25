@@ -49,6 +49,19 @@ Training now records:
 - `train_loss`, `val_loss`, `val_psnr`, `val_ssim` in `history.json`
 - Per-epoch preview PNGs under `previews/` (input center slice, target, prediction)
 
+## Train 3D reconstruction model (attention + physics-guided loss)
+
+```bash
+python scripts/train_recon3d.py --config d:/AI_LUNG/configs/recon3d.yaml
+```
+
+Outputs are saved under `d:/AI_LUNG/outputs/train_runs/recon3d`.
+
+Training records:
+- `train_loss`, `val_loss`, `val_psnr`, `val_ssim`
+- Physics loss components: `val_loss_recon`, `val_loss_grad`, `val_loss_range`
+- Per-epoch 3-panel preview PNGs under `previews/`
+
 ## Current modules
 
 - `ailung.dataset`: discovers CT series from `metadata.csv`
@@ -57,3 +70,8 @@ Training now records:
 - `ailung.splits`: patient-wise train/val/test split creation and loading
 - `ailung.torch_dataset`: baseline 2.5D denoiser dataset class
 - `ailung.models`: small U-Net style 2.5D denoiser baseline
+
+Additional reconstruction components:
+- `ailung.models.Recon3DAttentionUNetSmall`
+- `ailung.models.PhysicsGuidedReconLoss`
+- `ailung.torch_dataset.LIDCRecon3DPatchDataset`
