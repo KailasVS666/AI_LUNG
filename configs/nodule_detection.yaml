@@ -1,0 +1,26 @@
+# Nodule Detection Training Configuration
+
+# Dataset paths
+dataset_root: "d:/AI_LUNG/manifest-1600709154662"
+metadata_csv: "d:/AI_LUNG/manifest-1600709154662/metadata.csv"
+xml_dir: "d:/AI_LUNG/LIDC-XML-only/tcia-lidc-xml"
+split_json: "d:/AI_LUNG/outputs/splits/patient_split.json"
+
+# Output directory
+output_dir: "d:/AI_LUNG/outputs/train_runs/nodule_detection"
+
+# Hyperparameters
+batch_size: 4
+epochs: 3
+learning_rate: 0.0001
+
+# Data parameters
+patch_size: [32, 64, 64]  # (z, y, x) in voxels
+min_malignancy: 1  # Minimum malignancy score (1-5) to treat as positive (lowered for more samples)
+negatives_per_positive: 2  # Number of negative patches per positive patch
+hu_min: -1000
+hu_max: 400
+
+# Subset for local testing (remove for full training)
+max_cases_train: 15
+max_cases_val: 5

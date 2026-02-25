@@ -181,3 +181,57 @@ class PhysicsGuidedReconLoss(nn.Module):
             "loss_total": float(total.detach().item()),
         }
         return total, metrics
+
+
+class NoduleClassifier3D(nn.Module):
+    """
+    Lightweight 3D CNN classifier for nodule detection from 3D patches.
+    Uses strided convolutions for downsampling, global average pooling, and binary classification head.
+    """
+    def __init__(self, in_channels: int = 1, base_channels: int = 16, num_classes: int = 2) -> None:
+        super().__init__()
+        
+        # Feature extraction blocks
+        self.features = nn.Sequential(
+            # Block 1: (1, 32, 64, 64) -> (16, 16, 32, 32)
+            nn.Conv3d(in_channels, base_channels, kernel_size=3, stride=2, padding=1),
+            nn.InstanceNorm3d(base_channels),
+            nn.LeakyReLU(0.1, inplace=True),
+            
+            # Block 2: (16, 16, 32, 32) -> (32, 8, 16, 16)
+            nn.Conv3d(base_channels, base_channels * 2, kernel_size=3, stride=2, padding=1),
+            nn.InstanceNorm3d(base_channels * 2),
+            nn.LeakyReLU(0.1, inplace=True),
+            
+            # Block 3: (32, 8, 16, 16) -> (64, 4, 8, 8)
+            nn.Conv3d(base_channels * 2, base_channels * 4, kernel_size=3, stride=2, padding=1),
+            nn.InstanceNorm3d(base_channels * 4),
+            nn.LeakyReLU(0.1, inplace=True),
+            
+            # Block 4: (64, 4, 8, 8) -> (128, 2, 4, 4)
+            nn.Conv3d(base_channels * 4, base_channels * 8, kernel_size=3, stride=2, padding=1),
+            nn.InstanceNorm3d(base_channels * 8),
+            nn.LeakyReLU(0.1, inplace=True),
+        )
+        
+        # Global average pooling + classifier
+        self.gap = nn.AdaptiveAvgPool3d(1)
+        self.classifier = nn.Sequential(
+            nn.Dropout(0.3),
+            nn.Linear(base_channels * 8, num_classes),
+        )
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: (B, 1, D, H, W) input patches
+            
+        Returns:
+            (B, num_classes) logits
+        """
+        features = self.features(x)  # (B, 128, 2, 4, 4)
+        pooled = self.gap(features)  # (B, 128, 1, 1, 1)
+        flattened = pooled.view(pooled.size(0), -1)  # (B, 128)
+        logits = self.classifier(flattened)  # (B, 2)
+        return logits
+
