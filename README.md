@@ -29,8 +29,31 @@ python scripts/sanity_check.py
   - Training/fine-tuning
   - Evaluation and checkpointing
 
+## Build patient-wise splits
+
+```bash
+python scripts/build_splits.py
+```
+
+This writes `d:/AI_LUNG/outputs/splits/patient_split.json`.
+
+## Train 2.5D denoiser baseline
+
+```bash
+python scripts/train_denoiser_baseline.py --config d:/AI_LUNG/configs/baseline.yaml
+```
+
+Outputs are saved under `d:/AI_LUNG/outputs/train_runs/baseline_25d`.
+
+Training now records:
+- `train_loss`, `val_loss`, `val_psnr`, `val_ssim` in `history.json`
+- Per-epoch preview PNGs under `previews/` (input center slice, target, prediction)
+
 ## Current modules
 
 - `ailung.dataset`: discovers CT series from `metadata.csv`
 - `ailung.preprocess`: DICOM -> HU volume -> normalize -> isotropic resample
 - `ailung.annotations`: parses LIDC XML nodules and ROI contour points
+- `ailung.splits`: patient-wise train/val/test split creation and loading
+- `ailung.torch_dataset`: baseline 2.5D denoiser dataset class
+- `ailung.models`: small U-Net style 2.5D denoiser baseline
