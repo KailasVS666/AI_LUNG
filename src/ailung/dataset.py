@@ -25,7 +25,9 @@ def discover_ct_series(dataset_root: str | Path, metadata_csv: str | Path) -> li
 
     result: list[LIDCSeries] = []
     for _, row in ct_rows.iterrows():
-        rel = str(row["File Location"]).replace(".\\", "")
+        rel = str(row["File Location"])
+        # Normalise Windows-style separators and leading .\ or ./
+        rel = rel.replace("\\", "/").replace("./", "").lstrip("/")
         abs_path = (root / rel).resolve()
         if not abs_path.exists():
             continue
