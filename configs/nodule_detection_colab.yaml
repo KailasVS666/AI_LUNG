@@ -1,0 +1,26 @@
+# Nodule Detection - Production Config (Google Colab)
+
+# Dataset paths
+dataset_root: "/content/drive/MyDrive/AI_LUNG_DATA/manifest-1600709154662"
+metadata_csv: "/content/drive/MyDrive/AI_LUNG_DATA/manifest-1600709154662/metadata.csv"
+xml_dir: "/content/drive/MyDrive/AI_LUNG_DATA/LIDC-XML-only/tcia-lidc-xml"
+split_json: "/content/AI_LUNG/outputs/splits/patient_split.json"
+
+# Output directory (saved to Drive so it persists across sessions)
+output_dir: "/content/drive/MyDrive/AI_LUNG_DATA/outputs/nodule_detection"
+
+# Hyperparameters
+batch_size: 8
+epochs: 30
+learning_rate: 0.0001
+
+# Data parameters
+patch_size: [32, 64, 64]
+min_malignancy: 1
+negatives_per_positive: 2
+hu_min: -1000
+hu_max: 400
+
+# Full dataset - no limits
+max_cases_train: null
+max_cases_val: null

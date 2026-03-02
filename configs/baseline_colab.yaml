@@ -1,0 +1,26 @@
+seed: 42
+
+data:
+  dataset_root: /content/drive/MyDrive/AI_LUNG_DATA/manifest-1600709154662
+  metadata_csv: /content/drive/MyDrive/AI_LUNG_DATA/manifest-1600709154662/metadata.csv
+  splits_path: /content/AI_LUNG/outputs/splits/patient_split.json
+  hu_min: -1000
+  hu_max: 400
+  target_spacing: 1.0
+  context_slices: 1
+  max_cases_per_split:
+    train: null   # Use all 713 training series
+    val: null     # Use all 153 val series
+    test: null
+
+train:
+  batch_size: 8
+  num_workers: 2
+  epochs: 30
+  learning_rate: 0.0003
+  weight_decay: 0.00001
+  output_dir: /content/drive/MyDrive/AI_LUNG_DATA/outputs/baseline_25d
+
+runtime:
+  device: auto
+  mixed_precision: true
