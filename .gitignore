@@ -27,3 +27,6 @@ outputs/
 # Large medical datasets (keep local, do NOT commit)
 manifest-1600709154662/
 LIDC-XML-only/
+manifest.zip
+LIDC-XML-only.zip
+*.zip
