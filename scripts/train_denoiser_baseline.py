@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import json
+import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -105,13 +106,31 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     history = {"train_loss": [], "val_loss": [], "val_psnr": [], "val_ssim": []}
+    best_psnr = -float("inf")
+    start_epoch = 0
 
-    for epoch in range(cfg["train"]["epochs"]):
+    # --- Resume from checkpoint if available ---
+    resume_path = output_dir / "denoiser_last.pt"
+    hist_path   = output_dir / "history.json"
+    if resume_path.exists():
+        print(f"Resuming from {resume_path}", flush=True)
+        ckpt = torch.load(resume_path, map_location=device)
+        model.load_state_dict(ckpt["model_state_dict"])
+        if "optimizer_state_dict" in ckpt:
+            optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        start_epoch = ckpt.get("epoch", 0)
+        if hist_path.exists():
+            with hist_path.open() as f:
+                history = json.load(f)
+            best_psnr = max(history["val_psnr"]) if history["val_psnr"] else best_psnr
+        print(f"Resumed from epoch {start_epoch}. Best PSNR so far: {best_psnr:.4f}", flush=True)
+
+    for epoch in range(start_epoch, cfg["train"]["epochs"]):
         model.train()
         train_loss_sum = 0.0
         train_steps = 0
 
-        for batch in train_loader:
+        for batch_idx, batch in enumerate(train_loader):
             x = batch["x"].to(device)
             y = batch["y"].to(device)
 
@@ -124,6 +143,15 @@ def main() -> None:
 
             train_loss_sum += float(loss.item())
             train_steps += 1
+
+            # Print batch progress every 50 steps
+            if (batch_idx + 1) % 50 == 0:
+                print(
+                    f"  Epoch {epoch+1}/{cfg['train']['epochs']} "
+                    f"batch {batch_idx+1}/{len(train_loader)} "
+                    f"loss={train_loss_sum/train_steps:.6f}",
+                    flush=True,
+                )
 
         train_loss = train_loss_sum / max(train_steps, 1)
 
@@ -167,20 +195,35 @@ def main() -> None:
         history["val_ssim"].append(val_ssim)
 
         print(
-            f"Epoch {epoch + 1}/{cfg['train']['epochs']} - "
+            f"Epoch {epoch + 1}/{cfg['train']['epochs']} — "
             f"train_loss={train_loss:.6f} val_loss={val_loss:.6f} "
-            f"val_psnr={val_psnr:.4f} val_ssim={val_ssim:.4f}"
+            f"val_psnr={val_psnr:.4f} val_ssim={val_ssim:.4f}",
+            flush=True,
         )
 
-    ckpt_path = output_dir / "denoiser_baseline_last.pt"
-    torch.save({"model_state_dict": model.state_dict(), "config": cfg}, ckpt_path)
+        # Save latest checkpoint every epoch (resume-safe)
+        torch.save({
+            "epoch": epoch + 1,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "config": cfg,
+        }, output_dir / "denoiser_last.pt")
 
-    hist_path = output_dir / "history.json"
-    with hist_path.open("w", encoding="utf-8") as f:
-        json.dump(history, f, indent=2)
+        # Save best checkpoint
+        if val_psnr > best_psnr:
+            best_psnr = val_psnr
+            torch.save({
+                "epoch": epoch + 1,
+                "model_state_dict": model.state_dict(),
+                "config": cfg,
+            }, output_dir / "denoiser_best.pt")
+            print(f"  -> New best PSNR: {best_psnr:.4f} — saved denoiser_best.pt", flush=True)
 
-    print("Saved checkpoint:", ckpt_path)
-    print("Saved history:", hist_path)
+        # Save history every epoch (persists progress)
+        with hist_path.open("w", encoding="utf-8") as f:
+            json.dump(history, f, indent=2)
+
+    print("Training complete.", flush=True)
 
 
 if __name__ == "__main__":
