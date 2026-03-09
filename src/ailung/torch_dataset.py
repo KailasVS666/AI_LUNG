@@ -3,6 +3,10 @@ AI-LUNG PyTorch Datasets
 =========================
 
 Stage 1 — LIDCDenoise25DDataset:
+    LAZY LOADING: volumes are loaded & simulated on-demand per __getitem__,
+    with an LRU cache to avoid re-loading the same series.
+    Training starts in seconds — no upfront pre-computation.
+
     Input:  9 consecutive LOW-DOSE simulated CT slices  (Radon+Poisson+FBP)
     Target: 1 clean NORMAL-DOSE central slice
     Returns: {"ld": Tensor(9,H,W), "nd": Tensor(1,H,W)}
@@ -20,9 +24,12 @@ Stage 3 — NoduleDetectionDataset:
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 import random
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
 
 import numpy as np
 import torch
@@ -38,19 +45,41 @@ from .annotations import build_nodule_candidates, build_series_to_xml_mapping
 
 
 # ---------------------------------------------------------------------------
-# Stage 1 Dataset
+# LRU Volume Cache (shared across dataset instances in the same process)
+# ---------------------------------------------------------------------------
+
+class _LRUCache:
+    """Simple thread-unsafe LRU cache for numpy arrays."""
+    def __init__(self, maxsize: int = 8):
+        self._cache: OrderedDict[str, Any] = OrderedDict()
+        self._maxsize = maxsize
+
+    def get(self, key: str) -> Any | None:
+        if key not in self._cache:
+            return None
+        self._cache.move_to_end(key)
+        return self._cache[key]
+
+    def put(self, key: str, value: Any) -> None:
+        if key in self._cache:
+            self._cache.move_to_end(key)
+        self._cache[key] = value
+        if len(self._cache) > self._maxsize:
+            self._cache.popitem(last=False)
+
+
+# ---------------------------------------------------------------------------
+# Stage 1 Dataset — Lazy Loading
 # ---------------------------------------------------------------------------
 
 class LIDCDenoise25DDataset(Dataset):
     """
-    2.5D Denoising Dataset.
+    2.5D Denoising Dataset — LAZY LOADING with LRU cache.
 
-    For each CT series it builds:
-      - `volume_nd` : normal-dose volume (ground truth) via CLAHE-enhanced HU
-      - `volume_ld` : simulated low-dose version (Radon + Poisson + FBP)
+    __init__  : fast scan of series paths only (no DICOM loading)
+    __getitem__: loads + simulates on demand, caches last `cache_size` volumes
 
-    Each sample is a windows of `context_slices*2+1` consecutive slices.
-    Default context_slices=4 → 9-slice input.
+    Each sample = 9 low-dose slices → 1 normal-dose central slice
     """
 
     def __init__(
@@ -58,57 +87,122 @@ class LIDCDenoise25DDataset(Dataset):
         split_entries: list[dict[str, Any]],
         hu_min: int = -1000,
         hu_max: int = 400,
-        context_slices: int = 4,        # 9-slice input (4 + center + 4)
+        context_slices: int = 4,
         max_cases: int | None = None,
         apply_clahe_flag: bool = True,
         low_dose_i0: float = 1e5,
         seed: int = 42,
-        fast_mode: bool = False,        # True = Gaussian noise instead of Radon (local testing only)
+        fast_mode: bool = False,
         fast_mode_noise_std: float = 0.05,
+        cache_size: int = 6,          # how many volumes to keep in RAM at once
     ) -> None:
-        self.hu_min = hu_min
-        self.hu_max = hu_max
-        self.context_slices = context_slices
-        self.fast_mode = fast_mode
+        self.hu_min             = hu_min
+        self.hu_max             = hu_max
+        self.context_slices     = context_slices
+        self.apply_clahe_flag   = apply_clahe_flag
+        self.low_dose_i0        = low_dose_i0
+        self.seed               = seed
+        self.fast_mode          = fast_mode
         self.fast_mode_noise_std = fast_mode_noise_std
+
+        # LRU cache: key = series_path, value = (vol_nd, vol_ld)
+        self._cache = _LRUCache(maxsize=cache_size)
 
         selected = split_entries[:max_cases] if max_cases is not None else split_entries
 
-        self.samples: list[tuple[str, int]] = []
-        self.volumes_nd: dict[str, np.ndarray] = {}   # normal-dose (clean)
-        self.volumes_ld: dict[str, np.ndarray] = {}   # simulated low-dose
+        # Fast scan: record (series_path, series_idx, z) without loading DICOM
+        print(f"Scanning {len(selected)} series paths...", flush=True)
+        self.series_list: list[tuple[str, int]] = []   # (path, series_idx)
+        self.samples: list[tuple[str, int]] = []        # (series_path, z)
 
         for idx, item in enumerate(selected):
             series_path = str(item["file_location"])
-            volume_hu, _ = build_volume(series_path)
-            volume_nd = hu_clip_normalize(volume_hu, hu_min=self.hu_min, hu_max=self.hu_max)
+            self.series_list.append((series_path, idx))
 
-            if apply_clahe_flag:
-                volume_nd = apply_clahe(volume_nd)
+        # We need z-ranges — load shapes only (read one DICOM header per series)
+        # This is ~0.1s per series vs ~5s for full Radon load
+        print("Reading volume shapes (lightweight scan)...", flush=True)
+        self._shape_cache: dict[str, tuple[int, int, int]] = {}
+        from pathlib import Path as _Path
+        import pydicom
 
-            # Low-dose simulation
-            if self.fast_mode:
-                # Fast path: simple Gaussian noise (for local testing only)
-                rng = np.random.default_rng(seed + idx * 1000)
-                noise = rng.normal(0.0, self.fast_mode_noise_std, volume_nd.shape).astype(np.float32)
-                volume_ld = np.clip(volume_nd + noise, 0.0, 1.0)
-                if idx == 0:
-                    print("[fast_mode] Using Gaussian noise instead of Radon simulation.", flush=True)
-            else:
-                # Full pipeline: Radon -> Poisson -> FBP (use on Colab)
-                volume_ld = simulate_low_dose_volume(volume_nd, i0=low_dose_i0, seed=seed + idx * 1000)
+        for series_path, idx in self.series_list:
+            try:
+                dcm_files = sorted(_Path(series_path).glob("*.dcm"))
+                if not dcm_files:
+                    continue
+                sample_dcm = pydicom.dcmread(str(dcm_files[0]))
+                rows = int(sample_dcm.Rows)
+                cols = int(sample_dcm.Columns)
+                z    = len(dcm_files)
+                self._shape_cache[series_path] = (z, rows, cols)
+                for zi in range(self.context_slices, z - self.context_slices):
+                    self.samples.append((series_path, zi))
+            except Exception as e:
+                print(f"  [WARN] Skipping {series_path}: {e}", flush=True)
 
-            self.volumes_nd[series_path] = volume_nd
-            self.volumes_ld[series_path] = volume_ld
-
-            z_count = volume_nd.shape[0]
-            for z in range(self.context_slices, z_count - self.context_slices):
-                self.samples.append((series_path, z))
+        print(
+            f"Dataset ready: {len(self.series_list)} series, "
+            f"{len(self.samples)} samples. Training starts now!",
+            flush=True,
+        )
 
         if not self.samples:
-            raise RuntimeError(
-                "No training samples created. Check split entries and context_slices."
+            raise RuntimeError("No samples found. Check splits path and DICOM files.")
+
+    def _load_volumes(self, series_path: str, series_idx: int) -> tuple[np.ndarray, np.ndarray]:
+        """Load + simulate ONE series. Called lazily on first access."""
+        cached = self._cache.get(series_path)
+        if cached is not None:
+            return cached
+
+        # Load DICOM → HU → normalize
+        volume_hu, _ = build_volume(series_path)
+        volume_nd = hu_clip_normalize(volume_hu, hu_min=self.hu_min, hu_max=self.hu_max)
+
+        if self.apply_clahe_flag:
+            volume_nd = apply_clahe(volume_nd)
+
+        # Low-dose simulation
+        if self.fast_mode:
+            rng   = np.random.default_rng(self.seed + series_idx * 1000)
+            noise = rng.normal(0.0, self.fast_mode_noise_std, volume_nd.shape).astype(np.float32)
+            volume_ld = np.clip(volume_nd + noise, 0.0, 1.0)
+        else:
+            volume_ld = simulate_low_dose_volume(
+                volume_nd, i0=self.low_dose_i0, seed=self.seed + series_idx * 1000
             )
+
+        pair = (volume_nd, volume_ld)
+        self._cache.put(series_path, pair)
+        return pair
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
+        series_path, z = self.samples[index]
+
+        # Find series_idx for deterministic seeding
+        series_idx = next(
+            (i for p, i in self.series_list if p == series_path), 0
+        )
+
+        vol_nd, vol_ld = self._load_volumes(series_path, series_idx)
+
+        start = z - self.context_slices
+        end   = z + self.context_slices + 1
+
+        ld_stack = vol_ld[start:end].astype(np.float32)   # (9, H, W)
+        nd_slice  = vol_nd[z].astype(np.float32)            # (H, W)
+
+        return {
+            "ld": torch.from_numpy(ld_stack),
+            "nd": torch.from_numpy(nd_slice).unsqueeze(0),
+            "x":  torch.from_numpy(ld_stack),
+            "y":  torch.from_numpy(nd_slice).unsqueeze(0),
+        }
+
 
     def __len__(self) -> int:
         return len(self.samples)
