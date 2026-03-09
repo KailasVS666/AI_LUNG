@@ -224,6 +224,54 @@ def simulate_low_dose_volume(
     return out
 
 
+def simulate_low_dose_fast(
+    slices: np.ndarray,
+    i0: float = 1e5,
+    mu_scale: float = 4.0,
+    seed: int | None = None,
+) -> np.ndarray:
+    """
+    Fast pixel-space low-dose simulation using Beer-Lambert + Poisson noise.
+    Runs in MICROSECONDS vs minutes for Radon-based simulation.
+
+    Physically motivated:
+      - Convert normalized pixel → linear attenuation × path length
+      - Simulate photon counts: I = Poisson(I0 * exp(-mu * pixel))
+      - Back-convert to pixel value: pixel_ld = -log(I / I0) / mu_scale
+
+    Used for online training augmentation. The full Radon version is used
+    only in export_denoised.py (offline, one-time).
+
+    Args:
+        slices    : (N, H, W) or (H, W) float32 array in [0, 1]
+        i0        : Photon count (lower = noisier). 1e4=very low-dose, 1e5=low-dose
+        mu_scale  : Effective attenuation scale (controls noise magnitude)
+        seed      : Optional random seed
+
+    Returns:
+        Same shape float32 array in [0, 1]
+    """
+    rng = np.random.default_rng(seed)
+    squeeze = (slices.ndim == 2)
+    if squeeze:
+        slices = slices[np.newaxis]   # (1, H, W)
+
+    # Beer-Lambert: I_expected = I0 * exp(-mu * pixel)
+    expected = i0 * np.exp(-mu_scale * slices.astype(np.float64))
+    expected = np.maximum(expected, 1.0)  # avoid log(0)
+
+    # Poisson sampling
+    noisy = rng.poisson(expected).astype(np.float64)
+    noisy = np.maximum(noisy, 1.0)
+
+    # Back-convert to pixel value
+    ld = (-np.log(noisy / i0) / mu_scale).astype(np.float32)
+    ld = np.clip(ld, 0.0, 1.0)
+
+    return ld[0] if squeeze else ld
+
+
+
 # ---------------------------------------------------------------------------
 # Utility: Isotropic resampling
 # ---------------------------------------------------------------------------

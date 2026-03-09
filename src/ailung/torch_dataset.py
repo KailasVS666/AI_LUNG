@@ -40,6 +40,7 @@ from .preprocess import (
     hu_clip_normalize,
     apply_clahe,
     simulate_low_dose_volume,
+    simulate_low_dose_fast,
 )
 from .annotations import build_nodule_candidates, build_series_to_xml_mapping
 
@@ -105,8 +106,10 @@ class LIDCDenoise25DDataset(Dataset):
         self.fast_mode          = fast_mode
         self.fast_mode_noise_std = fast_mode_noise_std
 
-        # LRU cache: key = series_path, value = (vol_nd, vol_ld)
+        # LRU cache: key = series_path, value = vol_nd ONLY
+        # LD simulation happens per __getitem__ on 9 slices (microseconds)
         self._cache = _LRUCache(maxsize=cache_size)
+        self._series_idx: dict[str, int] = {}  # O(1) lookup
 
         selected = split_entries[:max_cases] if max_cases is not None else split_entries
 
@@ -118,6 +121,7 @@ class LIDCDenoise25DDataset(Dataset):
         for idx, item in enumerate(selected):
             series_path = str(item["file_location"])
             self.series_list.append((series_path, idx))
+            self._series_idx[series_path] = idx
 
         # We need z-ranges — load shapes only (read one DICOM header per series)
         # This is ~0.1s per series vs ~5s for full Radon load
@@ -150,57 +154,55 @@ class LIDCDenoise25DDataset(Dataset):
         if not self.samples:
             raise RuntimeError("No samples found. Check splits path and DICOM files.")
 
-    def _load_volumes(self, series_path: str, series_idx: int) -> tuple[np.ndarray, np.ndarray]:
-        """Load + simulate ONE series. Called lazily on first access."""
+    def _load_nd_volume(self, series_path: str) -> np.ndarray:
+        """Load normal-dose volume only. Cached in LRU cache."""
         cached = self._cache.get(series_path)
         if cached is not None:
             return cached
 
-        # Load DICOM → HU → normalize
         volume_hu, _ = build_volume(series_path)
         volume_nd = hu_clip_normalize(volume_hu, hu_min=self.hu_min, hu_max=self.hu_max)
 
         if self.apply_clahe_flag:
             volume_nd = apply_clahe(volume_nd)
 
-        # Low-dose simulation
-        if self.fast_mode:
-            rng   = np.random.default_rng(self.seed + series_idx * 1000)
-            noise = rng.normal(0.0, self.fast_mode_noise_std, volume_nd.shape).astype(np.float32)
-            volume_ld = np.clip(volume_nd + noise, 0.0, 1.0)
-        else:
-            volume_ld = simulate_low_dose_volume(
-                volume_nd, i0=self.low_dose_i0, seed=self.seed + series_idx * 1000
-            )
-
-        pair = (volume_nd, volume_ld)
-        self._cache.put(series_path, pair)
-        return pair
+        self._cache.put(series_path, volume_nd)
+        return volume_nd
 
     def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
-        series_path, z = self.samples[index]
+        series_path, z  = self.samples[index]
+        series_idx      = self._series_idx.get(series_path, 0)
 
-        # Find series_idx for deterministic seeding
-        series_idx = next(
-            (i for p, i in self.series_list if p == series_path), 0
-        )
-
-        vol_nd, vol_ld = self._load_volumes(series_path, series_idx)
+        # Load (or fetch from cache) the CLEAN normal-dose volume
+        vol_nd = self._load_nd_volume(series_path)
 
         start = z - self.context_slices
         end   = z + self.context_slices + 1
+        nd_window = vol_nd[start:end]    # (9, H, W) — normal-dose window
+        nd_slice  = vol_nd[z]             # (H, W)   — central target slice
 
-        ld_stack = vol_ld[start:end].astype(np.float32)   # (9, H, W)
-        nd_slice  = vol_nd[z].astype(np.float32)            # (H, W)
+        # Simulate low-dose on ONLY the 9 needed slices — microseconds
+        if self.fast_mode:
+            rng      = np.random.default_rng(self.seed + series_idx * 1000 + z)
+            noise    = rng.normal(0.0, self.fast_mode_noise_std,
+                                  nd_window.shape).astype(np.float32)
+            ld_stack = np.clip(nd_window + noise, 0.0, 1.0)
+        else:
+            # Fast pixel-space Beer-Lambert + Poisson (replaces Radon for online training)
+            ld_stack = simulate_low_dose_fast(
+                nd_window,
+                i0=self.low_dose_i0,
+                seed=self.seed + series_idx * 1000 + z,
+            )
 
         return {
-            "ld": torch.from_numpy(ld_stack),
-            "nd": torch.from_numpy(nd_slice).unsqueeze(0),
-            "x":  torch.from_numpy(ld_stack),
-            "y":  torch.from_numpy(nd_slice).unsqueeze(0),
+            "ld": torch.from_numpy(ld_stack.astype(np.float32)),
+            "nd": torch.from_numpy(nd_slice.astype(np.float32)).unsqueeze(0),
+            "x":  torch.from_numpy(ld_stack.astype(np.float32)),
+            "y":  torch.from_numpy(nd_slice.astype(np.float32)).unsqueeze(0),
         }
 
 
