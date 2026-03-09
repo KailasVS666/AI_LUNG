@@ -95,7 +95,8 @@ class LIDCDenoise25DDataset(Dataset):
         seed: int = 42,
         fast_mode: bool = False,
         fast_mode_noise_std: float = 0.05,
-        cache_size: int = 6,          # how many volumes to keep in RAM at once
+        cache_size: int = 6,
+        npy_mapping: dict[str, str] | None = None,  # path→npy_file, from preprocess_to_npy.py
     ) -> None:
         self.hu_min             = hu_min
         self.hu_max             = hu_max
@@ -110,6 +111,10 @@ class LIDCDenoise25DDataset(Dataset):
         # LD simulation happens per __getitem__ on 9 slices (microseconds)
         self._cache = _LRUCache(maxsize=cache_size)
         self._series_idx: dict[str, int] = {}  # O(1) lookup
+        # .npy fast-path: series_path -> npy file path
+        self._npy_map: dict[str, str] = npy_mapping or {}
+        if self._npy_map:
+            print(f"  [npy mode] {len(self._npy_map)} series have pre-computed .npy files.", flush=True)
 
         selected = split_entries[:max_cases] if max_cases is not None else split_entries
 
@@ -155,16 +160,21 @@ class LIDCDenoise25DDataset(Dataset):
             raise RuntimeError("No samples found. Check splits path and DICOM files.")
 
     def _load_nd_volume(self, series_path: str) -> np.ndarray:
-        """Load normal-dose volume only. Cached in LRU cache."""
+        """Load normal-dose volume — from .npy if available (fast), else DICOM."""
         cached = self._cache.get(series_path)
         if cached is not None:
             return cached
 
-        volume_hu, _ = build_volume(series_path)
-        volume_nd = hu_clip_normalize(volume_hu, hu_min=self.hu_min, hu_max=self.hu_max)
-
-        if self.apply_clahe_flag:
-            volume_nd = apply_clahe(volume_nd)
+        npy_path = self._npy_map.get(series_path)
+        if npy_path and Path(npy_path).exists():
+            # Fast path: load pre-processed float16 .npy (~2s from Drive)
+            volume_nd = np.load(npy_path).astype(np.float32)
+        else:
+            # Slow path: load raw DICOM + preprocess (~30s from Drive)
+            volume_hu, _ = build_volume(series_path)
+            volume_nd = hu_clip_normalize(volume_hu, hu_min=self.hu_min, hu_max=self.hu_max)
+            if self.apply_clahe_flag:
+                volume_nd = apply_clahe(volume_nd)
 
         self._cache.put(series_path, volume_nd)
         return volume_nd
@@ -204,6 +214,56 @@ class LIDCDenoise25DDataset(Dataset):
             "x":  torch.from_numpy(ld_stack.astype(np.float32)),
             "y":  torch.from_numpy(nd_slice.astype(np.float32)).unsqueeze(0),
         }
+
+
+# ---------------------------------------------------------------------------
+# Grouped Series Sampler — maximizes LRU cache hits
+# ---------------------------------------------------------------------------
+
+class GroupedSeriesSampler(torch.utils.data.Sampler):
+    """
+    Groups all slice indices from the same series together into consecutive
+    batches. This ensures each series is loaded from Drive ONLY ONCE per epoch,
+    making the LRU cache effectively 100% efficient.
+
+    Shuffle=True shuffles the ORDER of series across epochs, and shuffles slice
+    order within each series, so the model still sees diverse training signal.
+    """
+    def __init__(
+        self,
+        samples: list[tuple[str, int]],
+        shuffle: bool = True,
+        seed: int = 42,
+    ) -> None:
+        self.samples = samples
+        self.shuffle = shuffle
+        self.epoch   = 0
+        self.seed    = seed
+
+        # Group indices by series_path
+        self._groups: dict[str, list[int]] = {}
+        for i, (series_path, _) in enumerate(samples):
+            self._groups.setdefault(series_path, []).append(i)
+
+    def set_epoch(self, epoch: int) -> None:
+        """Call before each epoch for reproducible shuffling."""
+        self.epoch = epoch
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __iter__(self):
+        rng = np.random.default_rng(self.seed + self.epoch)
+        series_keys = list(self._groups.keys())
+
+        if self.shuffle:
+            rng.shuffle(series_keys)
+
+        for key in series_keys:
+            indices = self._groups[key].copy()
+            if self.shuffle:
+                rng.shuffle(indices)
+            yield from indices
 
 
 # ---------------------------------------------------------------------------

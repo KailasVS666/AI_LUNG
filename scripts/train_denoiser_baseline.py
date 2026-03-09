@@ -32,7 +32,7 @@ from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 
 from ailung.models import Denoise25DUNet, DenoiseLoss
 from ailung.splits import load_split
-from ailung.torch_dataset import LIDCDenoise25DDataset
+from ailung.torch_dataset import LIDCDenoise25DDataset, GroupedSeriesSampler
 
 
 # ---------------------------------------------------------------------------
@@ -45,7 +45,24 @@ def _resolve_device(device_cfg: str) -> torch.device:
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def _build_loader(split_entries: list[dict], cfg: dict, split_name: str) -> DataLoader:
+def _load_npy_mapping(cfg: dict) -> dict[str, str]:
+    """Load path→npy mapping from preprocess_to_npy.py output, if it exists."""
+    npy_dir = cfg["data"].get("preprocessed_npy_dir")
+    if not npy_dir:
+        npy_dir = str(Path(cfg["train"]["output_dir"]).parent / "preprocessed_npy")
+    mapping_path = Path(npy_dir) / "path_to_npy.json"
+    if mapping_path.exists():
+        with open(mapping_path) as f:
+            mapping = json.load(f)
+        print(f"  [npy] Loaded mapping for {len(mapping)} series → fast loading enabled!", flush=True)
+        return mapping
+    print("  [npy] No pre-computed .npy files found → using DICOM (slow).", flush=True)
+    print("  [npy] TIP: Run preprocess_to_npy.py first for 10x faster training.", flush=True)
+    return {}
+
+
+def _build_loader(split_entries: list[dict], cfg: dict, split_name: str,
+                  npy_mapping: dict | None = None) -> tuple[DataLoader, LIDCDenoise25DDataset]:
     max_cases = cfg["data"]["max_cases_per_split"].get(split_name)
     ds = LIDCDenoise25DDataset(
         split_entries=split_entries,
@@ -58,14 +75,18 @@ def _build_loader(split_entries: list[dict], cfg: dict, split_name: str) -> Data
         seed=int(cfg["seed"]),
         fast_mode=bool(cfg["data"].get("fast_mode", False)),
         fast_mode_noise_std=float(cfg["data"].get("fast_mode_noise_std", 0.05)),
+        npy_mapping=npy_mapping,
     )
-    return DataLoader(
+    is_train = (split_name == "train")
+    sampler  = GroupedSeriesSampler(ds.samples, shuffle=is_train, seed=int(cfg["seed"]))
+    loader   = DataLoader(
         ds,
         batch_size=cfg["train"]["batch_size"],
-        shuffle=(split_name == "train"),
+        sampler=sampler,
         num_workers=cfg["train"]["num_workers"],
         pin_memory=torch.cuda.is_available(),
     )
+    return loader, ds
 
 
 def _compute_psnr_ssim(y_true: np.ndarray, y_pred: np.ndarray) -> tuple[float, float]:
@@ -121,9 +142,10 @@ def main() -> None:
     early_stop_min_delta = float(cfg["train"].get("early_stop_min_delta", 0.01))
 
     print("Building datasets...", flush=True)
-    split = load_split(cfg["data"]["splits_path"])
-    train_loader = _build_loader(split["train"], cfg, "train")
-    val_loader   = _build_loader(split["val"],   cfg, "val")
+    split       = load_split(cfg["data"]["splits_path"])
+    npy_mapping = _load_npy_mapping(cfg)
+    train_loader, train_ds = _build_loader(split["train"], cfg, "train", npy_mapping)
+    val_loader,   val_ds   = _build_loader(split["val"],   cfg, "val",   npy_mapping)
     print(f"  Train batches: {len(train_loader)} | Val batches: {len(val_loader)}", flush=True)
 
     in_channels = cfg["data"]["context_slices"] * 2 + 1
@@ -185,9 +207,9 @@ def main() -> None:
         print(f"  Epoch {epoch+1}/{total_epochs}  |  LR: {current_lr:.2e}  |  No-improve: {no_improve_count}/{early_stop_patience}", flush=True)
         print(f"{'='*65}", flush=True)
 
-        # ----------------------------------------------------------------
-        # TRAIN
-        # ----------------------------------------------------------------
+        # Update grouped sampler epoch (for shuffling)
+        train_loader.sampler.set_epoch(epoch)
+
         model.train()
         train_loss_sum = 0.0
         train_steps    = 0

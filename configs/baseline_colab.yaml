@@ -19,6 +19,10 @@ data:
   # (used by Stage 2 as its input)
   denoised_out_dir: /content/drive/MyDrive/AI_LUNG_DATA/outputs/denoised_vols
 
+  # Path to pre-processed .npy volumes from preprocess_to_npy.py
+  # Run this ONCE before training for 10x faster data loading
+  preprocessed_npy_dir: /content/drive/MyDrive/AI_LUNG_DATA/outputs/preprocessed_npy
+
 loss:
   l1_weight: 1.0
   ssim_weight: 0.5
