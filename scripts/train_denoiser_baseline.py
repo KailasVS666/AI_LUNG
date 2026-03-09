@@ -146,7 +146,7 @@ def main() -> None:
 
     # ReduceLROnPlateau — halve LR if val PSNR doesn't improve for 3 epochs
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="max", factor=0.5, patience=3, verbose=True
+        optimizer, mode="max", factor=0.5, patience=3
     )
 
     use_amp = cfg["runtime"].get("mixed_precision", False) and torch.cuda.is_available()
