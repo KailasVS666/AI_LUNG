@@ -63,10 +63,14 @@ class LIDCDenoise25DDataset(Dataset):
         apply_clahe_flag: bool = True,
         low_dose_i0: float = 1e5,
         seed: int = 42,
+        fast_mode: bool = False,        # True = Gaussian noise instead of Radon (local testing only)
+        fast_mode_noise_std: float = 0.05,
     ) -> None:
         self.hu_min = hu_min
         self.hu_max = hu_max
         self.context_slices = context_slices
+        self.fast_mode = fast_mode
+        self.fast_mode_noise_std = fast_mode_noise_std
 
         selected = split_entries[:max_cases] if max_cases is not None else split_entries
 
@@ -82,8 +86,17 @@ class LIDCDenoise25DDataset(Dataset):
             if apply_clahe_flag:
                 volume_nd = apply_clahe(volume_nd)
 
-            # Per-series low-dose simulation (deterministic via seed+idx)
-            volume_ld = simulate_low_dose_volume(volume_nd, i0=low_dose_i0, seed=seed + idx * 1000)
+            # Low-dose simulation
+            if self.fast_mode:
+                # Fast path: simple Gaussian noise (for local testing only)
+                rng = np.random.default_rng(seed + idx * 1000)
+                noise = rng.normal(0.0, self.fast_mode_noise_std, volume_nd.shape).astype(np.float32)
+                volume_ld = np.clip(volume_nd + noise, 0.0, 1.0)
+                if idx == 0:
+                    print("[fast_mode] Using Gaussian noise instead of Radon simulation.", flush=True)
+            else:
+                # Full pipeline: Radon -> Poisson -> FBP (use on Colab)
+                volume_ld = simulate_low_dose_volume(volume_nd, i0=low_dose_i0, seed=seed + idx * 1000)
 
             self.volumes_nd[series_path] = volume_nd
             self.volumes_ld[series_path] = volume_ld

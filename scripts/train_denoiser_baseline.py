@@ -47,6 +47,8 @@ def _build_loader(split_entries: list[dict], cfg: dict, split_name: str) -> Data
         apply_clahe_flag=cfg["data"].get("apply_clahe", True),
         low_dose_i0=float(cfg["data"].get("low_dose_i0", 1e5)),
         seed=int(cfg["seed"]),
+        fast_mode=bool(cfg["data"].get("fast_mode", False)),
+        fast_mode_noise_std=float(cfg["data"].get("fast_mode_noise_std", 0.05)),
     )
     return DataLoader(
         ds,

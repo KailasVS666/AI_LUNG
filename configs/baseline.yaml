@@ -8,11 +8,13 @@ data:
   hu_max: 400
   target_spacing: 1.0
   context_slices: 4      # 9-slice input (4 + centre + 4)
-  apply_clahe: true
+  apply_clahe: false    # Disable CLAHE locally (needs OpenCV) — enable on Colab
+  fast_mode: true       # Skip Radon simulation locally; use Gaussian noise instead
   low_dose_i0: 1e5       # Photon count for Radon/Poisson simulation (lower = noisier)
+  fast_mode_noise_std: 0.05  # Gaussian noise std used in fast_mode
   max_cases_per_split:
-    train: 20
-    val: 5
+    train: 5
+    val: 2
     test: 5
 
 loss:
@@ -21,7 +23,7 @@ loss:
   grad_weight: 0.2
 
 train:
-  batch_size: 2
+  batch_size: 1
   num_workers: 0
   epochs: 2
   learning_rate: 0.0003
