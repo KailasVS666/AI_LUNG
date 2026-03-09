@@ -24,7 +24,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import autocast
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import yaml
@@ -150,7 +150,7 @@ def main() -> None:
     )
 
     use_amp = cfg["runtime"].get("mixed_precision", False) and torch.cuda.is_available()
-    scaler  = GradScaler() if use_amp else None
+    scaler  = torch.amp.GradScaler("cuda") if use_amp else None
 
     output_dir = Path(cfg["train"]["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -201,7 +201,7 @@ def main() -> None:
             optimizer.zero_grad()
 
             if use_amp:
-                with autocast():
+                with autocast(device_type="cuda"):
                     pred = model(x)
                     loss, _ = criterion(pred, y)
                 scaler.scale(loss).backward()

@@ -204,30 +204,6 @@ class LIDCDenoise25DDataset(Dataset):
         }
 
 
-    def __len__(self) -> int:
-        return len(self.samples)
-
-    def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
-        series_path, z = self.samples[index]
-        vol_nd = self.volumes_nd[series_path]
-        vol_ld = self.volumes_ld[series_path]
-
-        start = z - self.context_slices
-        end   = z + self.context_slices + 1
-
-        # 9-slice low-dose input, 1-slice normal-dose target
-        ld_stack = vol_ld[start:end]   # (9, H, W)
-        nd_slice  = vol_nd[z]           # (H, W)
-
-        return {
-            "ld": torch.from_numpy(ld_stack).float(),          # (9, H, W)
-            "nd": torch.from_numpy(nd_slice).float().unsqueeze(0),  # (1, H, W)
-            # Legacy key aliases so old training scripts still work
-            "x":  torch.from_numpy(ld_stack).float(),
-            "y":  torch.from_numpy(nd_slice).float().unsqueeze(0),
-        }
-
-
 # ---------------------------------------------------------------------------
 # Stage 2 Dataset
 # ---------------------------------------------------------------------------
