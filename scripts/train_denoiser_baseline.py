@@ -16,12 +16,17 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import json
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)   # suppress Radon warning
 
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch.cuda.amp import GradScaler, autocast
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 import yaml
 from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 
@@ -29,6 +34,10 @@ from ailung.models import Denoise25DUNet, DenoiseLoss
 from ailung.splits import load_split
 from ailung.torch_dataset import LIDCDenoise25DDataset
 
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _resolve_device(device_cfg: str) -> torch.device:
     if device_cfg == "cpu":
@@ -42,7 +51,7 @@ def _build_loader(split_entries: list[dict], cfg: dict, split_name: str) -> Data
         split_entries=split_entries,
         hu_min=cfg["data"]["hu_min"],
         hu_max=cfg["data"]["hu_max"],
-        context_slices=cfg["data"]["context_slices"],   # 4 → 9-slice input
+        context_slices=cfg["data"]["context_slices"],
         max_cases=max_cases,
         apply_clahe_flag=cfg["data"].get("apply_clahe", True),
         low_dose_i0=float(cfg["data"].get("low_dose_i0", 1e5)),
@@ -67,36 +76,35 @@ def _compute_psnr_ssim(y_true: np.ndarray, y_pred: np.ndarray) -> tuple[float, f
     return psnr, ssim
 
 
-def _save_preview(
-    epoch: int,
-    output_dir: Path,
-    x_ld: np.ndarray,
-    y_nd: np.ndarray,
-    y_pred: np.ndarray,
-) -> None:
+def _save_preview(epoch: int, output_dir: Path,
+                  x_ld: np.ndarray, y_nd: np.ndarray, y_pred: np.ndarray) -> None:
     preview_dir = output_dir / "previews"
     preview_dir.mkdir(parents=True, exist_ok=True)
-
-    # Show centre slice of 9-slice LD input
     center = x_ld.shape[0] // 2
-
     fig, axes = plt.subplots(1, 3, figsize=(12, 4))
-    axes[0].imshow(x_ld[center], cmap="gray")
-    axes[0].set_title("Low-Dose Input (centre slice)")
-    axes[0].axis("off")
-
-    axes[1].imshow(y_nd, cmap="gray")
-    axes[1].set_title("Normal-Dose Target")
-    axes[1].axis("off")
-
-    axes[2].imshow(y_pred, cmap="gray")
-    axes[2].set_title("Denoised Prediction")
-    axes[2].axis("off")
-
+    axes[0].imshow(x_ld[center], cmap="gray"); axes[0].set_title("Low-Dose Input"); axes[0].axis("off")
+    axes[1].imshow(y_nd,         cmap="gray"); axes[1].set_title("Normal-Dose Target"); axes[1].axis("off")
+    axes[2].imshow(y_pred,       cmap="gray"); axes[2].set_title("Denoised Output"); axes[2].axis("off")
     fig.tight_layout()
-    fig.savefig(preview_dir / f"epoch_{epoch + 1:03d}.png", dpi=150)
+    fig.savefig(preview_dir / f"epoch_{epoch + 1:03d}.png", dpi=120)
     plt.close(fig)
 
+
+def _plot_history(history: dict, output_dir: Path) -> None:
+    epochs = range(1, len(history["train_loss"]) + 1)
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+    axes[0].plot(epochs, history["train_loss"], label="Train"); axes[0].plot(epochs, history["val_loss"], label="Val")
+    axes[0].set_title("Loss"); axes[0].legend(); axes[0].grid(True)
+    axes[1].plot(epochs, history["val_psnr"], "g-o"); axes[1].set_title("Val PSNR (dB)"); axes[1].grid(True)
+    axes[2].plot(epochs, history["val_ssim"], "b-o"); axes[2].set_title("Val SSIM"); axes[2].grid(True)
+    plt.tight_layout()
+    plt.savefig(output_dir / "training_curves.png", dpi=120)
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train Stage 1 — 2.5D Denoising")
@@ -108,16 +116,21 @@ def main() -> None:
 
     torch.manual_seed(cfg["seed"])
 
+    # Early stopping config (with sensible defaults)
+    early_stop_patience = int(cfg["train"].get("early_stop_patience", 7))
+    early_stop_min_delta = float(cfg["train"].get("early_stop_min_delta", 0.01))
+
+    print("Building datasets...", flush=True)
     split = load_split(cfg["data"]["splits_path"])
     train_loader = _build_loader(split["train"], cfg, "train")
     val_loader   = _build_loader(split["val"],   cfg, "val")
+    print(f"  Train batches: {len(train_loader)} | Val batches: {len(val_loader)}", flush=True)
 
-    # in_channels = context_slices * 2 + 1  (9 for context_slices=4)
     in_channels = cfg["data"]["context_slices"] * 2 + 1
-    model = Denoise25DUNet(in_channels=in_channels, out_channels=1)
-
+    model  = Denoise25DUNet(in_channels=in_channels, out_channels=1)
     device = _resolve_device(cfg["runtime"]["device"])
     model  = model.to(device)
+    print(f"  Device: {device} | AMP: {cfg['runtime'].get('mixed_precision', False)}", flush=True)
 
     criterion = DenoiseLoss(
         l1_weight=float(cfg.get("loss", {}).get("l1_weight", 1.0)),
@@ -131,17 +144,23 @@ def main() -> None:
         weight_decay=float(cfg["train"]["weight_decay"]),
     )
 
+    # ReduceLROnPlateau — halve LR if val PSNR doesn't improve for 3 epochs
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="max", factor=0.5, patience=3, verbose=True
+    )
+
     use_amp = cfg["runtime"].get("mixed_precision", False) and torch.cuda.is_available()
     scaler  = GradScaler() if use_amp else None
 
     output_dir = Path(cfg["train"]["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    history = {"train_loss": [], "val_loss": [], "val_psnr": [], "val_ssim": []}
+    history     = {"train_loss": [], "val_loss": [], "val_psnr": [], "val_ssim": []}
     best_psnr   = -float("inf")
     start_epoch = 0
+    no_improve_count = 0   # early stopping counter
 
-    # --- Resume from checkpoint if available ---
+    # --- Resume ---
     resume_path = output_dir / "denoiser_last.pt"
     hist_path   = output_dir / "history.json"
     if resume_path.exists():
@@ -151,22 +170,34 @@ def main() -> None:
         if "optimizer_state_dict" in ckpt:
             optimizer.load_state_dict(ckpt["optimizer_state_dict"])
         start_epoch = ckpt.get("epoch", 0)
+        no_improve_count = ckpt.get("no_improve_count", 0)
         if hist_path.exists():
             with hist_path.open() as f:
                 history = json.load(f)
             best_psnr = max(history["val_psnr"]) if history["val_psnr"] else best_psnr
-        print(f"Resumed from epoch {start_epoch}. Best PSNR so far: {best_psnr:.4f}", flush=True)
+        print(f"  Resumed epoch {start_epoch} | Best PSNR: {best_psnr:.4f} | No-improve streak: {no_improve_count}", flush=True)
 
-    for epoch in range(start_epoch, cfg["train"]["epochs"]):
-        # ---- TRAIN ----
+    total_epochs = cfg["train"]["epochs"]
+
+    for epoch in range(start_epoch, total_epochs):
+        current_lr = optimizer.param_groups[0]["lr"]
+        print(f"\n{'='*65}", flush=True)
+        print(f"  Epoch {epoch+1}/{total_epochs}  |  LR: {current_lr:.2e}  |  No-improve: {no_improve_count}/{early_stop_patience}", flush=True)
+        print(f"{'='*65}", flush=True)
+
+        # ----------------------------------------------------------------
+        # TRAIN
+        # ----------------------------------------------------------------
         model.train()
-        train_loss_sum  = 0.0
-        train_steps     = 0
+        train_loss_sum = 0.0
+        train_steps    = 0
 
-        for batch_idx, batch in enumerate(train_loader):
-            x = batch["x"].to(device)   # (B, 9, H, W)
-            y = batch["y"].to(device)   # (B, 1, H, W)
+        train_bar = tqdm(train_loader, desc="  Train", unit="batch",
+                         dynamic_ncols=True, leave=True)
 
+        for batch in train_bar:
+            x = batch["x"].to(device)
+            y = batch["y"].to(device)
             optimizer.zero_grad()
 
             if use_amp:
@@ -184,18 +215,15 @@ def main() -> None:
 
             train_loss_sum += float(loss.item())
             train_steps    += 1
+            running_avg     = train_loss_sum / train_steps
 
-            if (batch_idx + 1) % 50 == 0:
-                print(
-                    f"  Epoch {epoch+1}/{cfg['train']['epochs']} "
-                    f"batch {batch_idx+1}/{len(train_loader)} "
-                    f"loss={train_loss_sum/train_steps:.6f}",
-                    flush=True,
-                )
+            train_bar.set_postfix(loss=f"{running_avg:.4f}")
 
         train_loss = train_loss_sum / max(train_steps, 1)
 
-        # ---- VALIDATE ----
+        # ----------------------------------------------------------------
+        # VALIDATE
+        # ----------------------------------------------------------------
         model.eval()
         val_loss_sum    = 0.0
         val_steps       = 0
@@ -204,8 +232,11 @@ def main() -> None:
         val_image_count = 0
         preview_saved   = False
 
+        val_bar = tqdm(val_loader, desc="  Val  ", unit="batch",
+                       dynamic_ncols=True, leave=True)
+
         with torch.no_grad():
-            for batch in val_loader:
+            for batch in val_bar:
                 x = batch["x"].to(device)
                 y = batch["y"].to(device)
                 pred = model(x)
@@ -213,15 +244,20 @@ def main() -> None:
                 val_loss_sum += float(loss.item())
                 val_steps    += 1
 
-                y_np    = y.detach().cpu().numpy()[:, 0, :, :]     # (B, H, W)
-                pred_np = pred.detach().cpu().numpy()[:, 0, :, :]  # (B, H, W)
-                x_np    = x.detach().cpu().numpy()                  # (B, 9, H, W)
+                y_np    = y.detach().cpu().numpy()[:, 0]
+                pred_np = pred.detach().cpu().numpy()[:, 0]
+                x_np    = x.detach().cpu().numpy()
 
                 for i in range(y_np.shape[0]):
                     psnr, ssim = _compute_psnr_ssim(y_np[i], pred_np[i])
                     val_psnr_sum    += psnr
                     val_ssim_sum    += ssim
                     val_image_count += 1
+
+                val_bar.set_postfix(
+                    loss=f"{val_loss_sum/val_steps:.4f}",
+                    psnr=f"{val_psnr_sum/max(val_image_count,1):.2f}",
+                )
 
                 if not preview_saved and y_np.shape[0] > 0:
                     _save_preview(epoch, output_dir, x_np[0], y_np[0], pred_np[0])
@@ -236,37 +272,74 @@ def main() -> None:
         history["val_psnr"].append(val_psnr)
         history["val_ssim"].append(val_ssim)
 
+        # ----------------------------------------------------------------
+        # Summary line
+        # ----------------------------------------------------------------
         print(
-            f"Epoch {epoch+1}/{cfg['train']['epochs']} — "
-            f"train_loss={train_loss:.6f} val_loss={val_loss:.6f} "
-            f"val_psnr={val_psnr:.4f} val_ssim={val_ssim:.4f}",
+            f"\n  Summary  train_loss={train_loss:.4f}  val_loss={val_loss:.4f}  "
+            f"val_psnr={val_psnr:.2f} dB  val_ssim={val_ssim:.4f}",
             flush=True,
         )
 
-        # Save last checkpoint (resume-safe)
+        # ----------------------------------------------------------------
+        # LR Scheduler
+        # ----------------------------------------------------------------
+        scheduler.step(val_psnr)
+
+        # ----------------------------------------------------------------
+        # Checkpointing
+        # ----------------------------------------------------------------
+        # Always save last (resume-safe)
         torch.save(
             {
                 "epoch": epoch + 1,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
+                "no_improve_count": no_improve_count,
                 "config": cfg,
             },
             output_dir / "denoiser_last.pt",
         )
 
-        # Save best checkpoint
-        if val_psnr > best_psnr:
+        # Save best
+        improvement = val_psnr - best_psnr
+        if improvement > early_stop_min_delta:
             best_psnr = val_psnr
+            no_improve_count = 0
             torch.save(
                 {"epoch": epoch + 1, "model_state_dict": model.state_dict(), "config": cfg},
                 output_dir / "denoiser_best.pt",
             )
-            print(f"  -> New best PSNR: {best_psnr:.4f} — saved denoiser_best.pt", flush=True)
+            print(f"  ✓ New best PSNR: {best_psnr:.2f} dB — saved denoiser_best.pt", flush=True)
+        else:
+            no_improve_count += 1
+            print(
+                f"  ✗ No improvement ({improvement:+.4f} dB).  "
+                f"Patience: {no_improve_count}/{early_stop_patience}",
+                flush=True,
+            )
 
+        # Save history + curves
         with hist_path.open("w", encoding="utf-8") as f:
             json.dump(history, f, indent=2)
+        _plot_history(history, output_dir)
 
-    print("Training complete.", flush=True)
+        # ----------------------------------------------------------------
+        # Early stopping
+        # ----------------------------------------------------------------
+        if no_improve_count >= early_stop_patience:
+            print(
+                f"\n  *** EARLY STOPPING triggered after {epoch+1} epochs ***\n"
+                f"  Val PSNR did not improve by >{early_stop_min_delta} dB "
+                f"for {early_stop_patience} consecutive epochs.\n"
+                f"  Best PSNR: {best_psnr:.2f} dB",
+                flush=True,
+            )
+            break
+
+    print("\nTraining complete.", flush=True)
+    print(f"Best Val PSNR: {best_psnr:.2f} dB", flush=True)
+    print(f"Checkpoints saved to: {output_dir}", flush=True)
 
 
 if __name__ == "__main__":

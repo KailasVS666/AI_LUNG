@@ -31,6 +31,8 @@ train:
   learning_rate: 0.0003
   weight_decay: 0.00001
   output_dir: /content/drive/MyDrive/AI_LUNG_DATA/outputs/denoiser_25d
+  early_stop_patience: 7      # Stop if val PSNR doesn't improve for 7 epochs
+  early_stop_min_delta: 0.01  # Minimum improvement in dB to count as "better"
 
 runtime:
   device: auto
