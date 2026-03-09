@@ -2,16 +2,27 @@ seed: 42
 
 data:
   dataset_root: /content/drive/MyDrive/AI_LUNG_DATA/manifest-1600709154662
-  metadata_csv: /content/drive/MyDrive/AI_LUNG_DATA/manifest-1600709154662/metadata.csv
-  splits_path: /content/AI_LUNG/outputs/splits/patient_split.json
+  metadata_csv:  /content/drive/MyDrive/AI_LUNG_DATA/manifest-1600709154662/metadata.csv
+  splits_path:   /content/AI_LUNG/outputs/splits/patient_split.json
   hu_min: -1000
   hu_max: 400
   target_spacing: 1.0
-  context_slices: 1
+  context_slices: 4      # 9-slice input (4 + centre + 4)
+  apply_clahe: true
+  low_dose_i0: 1e5       # Poisson photon count (1e5 ≈ realistic low-dose)
   max_cases_per_split:
-    train: null   # Use all 713 training series
-    val: null     # Use all 153 val series
+    train: null           # Use all 713 training series
+    val: null             # Use all 153 val series
     test: null
+
+  # Path where export_denoised.py saves the denoised .npy volumes
+  # (used by Stage 2 as its input)
+  denoised_out_dir: /content/drive/MyDrive/AI_LUNG_DATA/outputs/denoised_vols
+
+loss:
+  l1_weight: 1.0
+  ssim_weight: 0.5
+  grad_weight: 0.2
 
 train:
   batch_size: 8
@@ -19,7 +30,7 @@ train:
   epochs: 30
   learning_rate: 0.0003
   weight_decay: 0.00001
-  output_dir: /content/drive/MyDrive/AI_LUNG_DATA/outputs/baseline_25d
+  output_dir: /content/drive/MyDrive/AI_LUNG_DATA/outputs/denoiser_25d
 
 runtime:
   device: auto

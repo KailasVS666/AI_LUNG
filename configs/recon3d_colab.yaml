@@ -4,20 +4,23 @@ data:
   splits_path: /content/AI_LUNG/outputs/splits/patient_split.json
   hu_min: -1000
   hu_max: 400
-  patch_size: [32, 96, 96]
+  patch_size: [64, 64, 64]   # 64³ voxel patches
   patches_per_volume:
-    train: 16
-    val: 8
-  noise_std: 0.03
+    train: 20
+    val: 10
+  noise_std: 0.03             # Fallback if no denoised vols
+  # Path to .npy denoised volumes saved by export_denoised.py
+  denoised_vol_dir: /content/drive/MyDrive/AI_LUNG_DATA/outputs/denoised_vols
   max_cases_per_split:
-    train: null   # Use all 713 training series
-    val: null     # Use all 153 val series
+    train: null               # Use all 713 training series
+    val: null
 
 model:
   base_channels: 16
   l1_weight: 1.0
+  ssim_weight: 0.5
   grad_weight: 0.2
-  range_weight: 0.05
+  proj_weight: 0.1
 
 train:
   batch_size: 4
@@ -29,3 +32,4 @@ train:
 
 runtime:
   device: auto
+  mixed_precision: true

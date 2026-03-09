@@ -4,11 +4,13 @@ data:
   splits_path: d:/AI_LUNG/outputs/splits/patient_split.json
   hu_min: -1000
   hu_max: 400
-  patch_size: [32, 96, 96]
+  patch_size: [64, 64, 64]   # 64³ voxel patches (new architecture)
   patches_per_volume:
     train: 12
     val: 6
-  noise_std: 0.03
+  noise_std: 0.03             # Gaussian fallback if denoised_vol_dir not set
+  # Optional: path to pre-exported denoised .npy volumes from Stage 1
+  # denoised_vol_dir: d:/AI_LUNG/outputs/denoised_vols
   max_cases_per_split:
     train: 10
     val: 3
@@ -16,11 +18,12 @@ data:
 model:
   base_channels: 16
   l1_weight: 1.0
+  ssim_weight: 0.5
   grad_weight: 0.2
-  range_weight: 0.05
+  proj_weight: 0.1
 
 train:
-  batch_size: 2
+  batch_size: 1
   num_workers: 0
   epochs: 2
   learning_rate: 0.0002
@@ -29,3 +32,4 @@ train:
 
 runtime:
   device: auto
+  mixed_precision: false
