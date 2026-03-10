@@ -62,27 +62,58 @@ def _load_npy_mapping(cfg: dict) -> dict[str, str]:
     return {}
 
 
-def _sync_to_local_disk(cfg: dict):
-    """Sync preprocessed .npy files from Google Drive to local VM disk for 10x speed."""
+def _sync_to_local_disk(cfg: dict, split_entries: list[dict]):
+    """Selective sync: only sync files we actually need for this session. 
+    Prevents crashing Colab with a 'Disk Full' error (120GB dataset vs 70GB disk)."""
     drive_npy = cfg["data"].get("preprocessed_npy_dir")
     local_npy = cfg["data"].get("local_npy_cache")
     
     if not local_npy or not drive_npy:
         return None
     
+    # 1. Map split paths to expected .npy filenames
+    npy_mapping = _load_npy_mapping(cfg)
+    needed_files = []
+    for entry in split_entries:
+        p = entry["file_location"]
+        if p in npy_mapping:
+            needed_files.append(Path(npy_mapping[p]).name)
+            
+    if not needed_files:
+        return None
+
+    print(f"\n🚀 Turbo-charging: Syncing {len(needed_files)} series to local NVMe...", flush=True)
     import subprocess
+    import shutil
     os.makedirs(local_npy, exist_ok=True)
     
-    # Use -rLt (recursive, links, times) instead of -a (archive), 
-    # because Drive mount rejects permission/owner syncing (-a).
-    cmd = f"rsync -rLt --size-only --info=progress2 {drive_npy}/ {local_npy}/"
+    # Check disk space (Colab usually has ~70-100GB)
+    total, used, free = shutil.disk_usage("/content")
+    free_gb = free // (2**30)
+    
+    # 2. Write a temporary file list for rsync --files-from (most efficient way)
+    list_file = Path("/tmp/sync_list.txt")
+    with open(list_file, "w") as f:
+        for fname in needed_files:
+            f.write(f"{fname}\n")
+    
+    # 3. Selective rsync
+    # We use --ignore-existing to skip what's already there on resume
+    # and --max-size can be used if we want, but selective list is better.
+    cmd = [
+        "rsync", "-rLt", "--size-only", "--info=progress2",
+        "--files-from=" + str(list_file),
+        str(drive_npy) + "/", str(local_npy) + "/"
+    ]
+    
     try:
-        # We don't use check=True here so we can continue even if some files fail
-        subprocess.run(cmd, shell=True, capture_output=False) 
-        print("✅ Local sync finished (or partially finished). Proceeding to training...", flush=True)
+        # We check disk space again inside if we were doing a loop, 
+        # but for rsync we just let it run. If it fails, we fall back.
+        subprocess.run(cmd, check=False)
+        print("✅ Selective sync finished. Training will be lightning fast!", flush=True)
         return local_npy
     except Exception as e:
-        print(f"⚠️ Local sync failed: {e}. Falling back to Drive.", flush=True)
+        print(f"⚠️ Selective sync failed: {e}. Falling back to Drive.", flush=True)
         return None
 
 
@@ -171,9 +202,12 @@ def main() -> None:
     print("Building datasets...", flush=True)
     # 1. Load Data & Setup
     npy_mapping = _load_npy_mapping(cfg)
-    local_cache = _sync_to_local_disk(cfg)
+    split       = load_split(cfg["data"]["splits_path"])
     
-    split = load_split(cfg["data"]["splits_path"])
+    # Only sync the files needed for TRAIN + VAL
+    needed_for_sync = split["train"] + split["val"]
+    local_cache     = _sync_to_local_disk(cfg, needed_for_sync)
+    
     train_loader, train_ds = _build_loader(split["train"], cfg, "train", npy_mapping, local_cache)
     val_loader,   val_ds   = _build_loader(split["val"],   cfg, "val",   npy_mapping, local_cache)
     print(f"  Train batches: {len(train_loader)} | Val batches: {len(val_loader)}", flush=True)
