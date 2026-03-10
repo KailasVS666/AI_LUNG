@@ -111,6 +111,7 @@ class LIDCDenoise25DDataset(Dataset):
         # LD simulation happens per __getitem__ on 9 slices (microseconds)
         self._cache = _LRUCache(maxsize=cache_size)
         self._series_idx: dict[str, int] = {}  # O(1) lookup
+        self._shape_cache: dict[str, tuple[int, int, int]] = {} # metadata cache
         # .npy fast-path: series_path -> npy file path
         self._npy_map: dict[str, str] = npy_mapping or {}
         if self._npy_map:
