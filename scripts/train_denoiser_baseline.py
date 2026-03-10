@@ -248,11 +248,14 @@ def main() -> None:
             optimizer.load_state_dict(ckpt["optimizer_state_dict"])
         start_epoch = ckpt.get("epoch", 0)
         no_improve_count = ckpt.get("no_improve_count", 0)
+        
+        # Load history + best PSNR
         if hist_path.exists():
-            with hist_path.open() as f:
+            with open(hist_path, "r", encoding="utf-8") as f:
                 history = json.load(f)
-            best_psnr = max(history["val_psnr"]) if history["val_psnr"] else best_psnr
-        print(f"  Resumed epoch {start_epoch} | Best PSNR: {best_psnr:.4f} | No-improve streak: {no_improve_count}", flush=True)
+            if history["val_psnr"]:
+                best_psnr = max(history["val_psnr"])
+        print(f"  ✓ Resumed Epoch: {start_epoch} | Best PSNR: {best_psnr:.2f} dB | Strike: {no_improve_count}", flush=True)
 
     total_epochs = cfg["train"]["epochs"]
 
