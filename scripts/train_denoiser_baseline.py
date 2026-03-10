@@ -56,10 +56,7 @@ def _load_npy_mapping(cfg: dict) -> dict[str, str]:
     if mapping_path.exists():
         with open(mapping_path) as f:
             mapping = json.load(f)
-        print(f"  [npy] Loaded mapping for {len(mapping)} series → fast loading enabled!", flush=True)
         return mapping
-    print("  [npy] No pre-computed .npy files found → using DICOM (slow).", flush=True)
-    print("  [npy] TIP: Run preprocess_to_npy.py first for 10x faster training.", flush=True)
     return {}
 
 
@@ -100,9 +97,10 @@ def _sync_to_local_disk(cfg: dict, split_entries: list[dict]):
             for fname in batch: f.write(f"{fname}\n")
         
         cmd = ["rsync", "-rLt", "--size-only", "--files-from=" + str(list_file), str(drive_npy) + "/", str(local_npy) + "/"]
-        subprocess.run(cmd, check=False, capture_output=True)
+        # Remove capture_output=True so we don't buffer the progress
+        subprocess.run(cmd, check=False) 
         count += len(batch)
-        print(f"  Synced {count}/{len(needed_files)} series... ({percent_used:.1f}% disk used)", end="\r", flush=True)
+        print(f"  Synced {count}/{len(needed_files)} series... ({percent_used:.1f}% disk used)", flush=True)
 
     print(f"\n✅ Sync complete ({count} series cached locally). Training starts now!", flush=True)
     return local_npy
@@ -193,7 +191,12 @@ def main() -> None:
     print("Building datasets...", flush=True)
     # 1. Load Data & Setup
     npy_mapping = _load_npy_mapping(cfg)
-    split       = load_split(cfg["data"]["splits_path"])
+    if npy_mapping:
+        print(f"  [npy] Loaded mapping for {len(npy_mapping)} series → fast loading enabled!", flush=True)
+    else:
+        print("  [npy] No pre-computed .npy files found → using DICOM (slow).", flush=True)
+
+    split = load_split(cfg["data"]["splits_path"])
     
     # Only sync the files needed for TRAIN + VAL
     needed_for_sync = split["train"] + split["val"]
