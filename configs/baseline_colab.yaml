@@ -14,6 +14,7 @@ data:
     train: null           # Use all 713 training series
     val: null             # Use all 153 val series
     test: null
+  max_samples_per_series: 64 # Reduce from ~250 to 64 for 4x speedup
 
   # Path where export_denoised.py saves the denoised .npy volumes
   # (used by Stage 2 as its input)
@@ -29,8 +30,8 @@ loss:
   grad_weight: 0.2
 
 train:
-  batch_size: 8
-  num_workers: 2
+  batch_size: 32
+  num_workers: 4
   epochs: 30
   learning_rate: 0.0003
   weight_decay: 0.00001

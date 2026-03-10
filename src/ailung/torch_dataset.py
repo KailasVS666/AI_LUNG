@@ -96,7 +96,8 @@ class LIDCDenoise25DDataset(Dataset):
         fast_mode: bool = False,
         fast_mode_noise_std: float = 0.05,
         cache_size: int = 6,
-        npy_mapping: dict[str, str] | None = None,  # path→npy_file, from preprocess_to_npy.py
+        max_samples_per_series: int | None = 64,  # Limit slices per volume for speed
+        npy_mapping: dict[str, str] | None = None,
     ) -> None:
         self.hu_min             = hu_min
         self.hu_max             = hu_max
@@ -106,6 +107,7 @@ class LIDCDenoise25DDataset(Dataset):
         self.seed               = seed
         self.fast_mode          = fast_mode
         self.fast_mode_noise_std = fast_mode_noise_std
+        self.max_samples_per_series = max_samples_per_series
 
         # LRU cache: key = series_path, value = vol_nd ONLY
         # LD simulation happens per __getitem__ on 9 slices (microseconds)
@@ -168,8 +170,19 @@ class LIDCDenoise25DDataset(Dataset):
             if res:
                 p, (z, r, c) = res
                 self._shape_cache[p] = (z, r, c)
-                for zi in range(self.context_slices, z - self.context_slices):
-                    self.samples.append((p, zi))
+                
+                # Determine which slices to train on
+                all_possible_zi = list(range(self.context_slices, z - self.context_slices))
+                
+                if self.max_samples_per_series and len(all_possible_zi) > self.max_samples_per_series:
+                    # Deterministic sampling based on series index for reproducibility
+                    rng = np.random.default_rng(self.seed + self._series_idx[p])
+                    sampled_zi = rng.choice(all_possible_zi, size=self.max_samples_per_series, replace=False)
+                    for zi in sampled_zi:
+                        self.samples.append((p, int(zi)))
+                else:
+                    for zi in all_possible_zi:
+                        self.samples.append((p, zi))
 
         print(
             f"Dataset ready: {len(self._shape_cache)} series, "

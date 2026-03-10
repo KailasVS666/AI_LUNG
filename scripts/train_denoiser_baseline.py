@@ -75,6 +75,7 @@ def _build_loader(split_entries: list[dict], cfg: dict, split_name: str,
         seed=int(cfg["seed"]),
         fast_mode=bool(cfg["data"].get("fast_mode", False)),
         fast_mode_noise_std=float(cfg["data"].get("fast_mode_noise_std", 0.05)),
+        max_samples_per_series=cfg["data"].get("max_samples_per_series", 64),
         npy_mapping=npy_mapping,
     )
     is_train = (split_name == "train")
