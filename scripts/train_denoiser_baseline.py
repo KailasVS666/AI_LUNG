@@ -63,58 +63,48 @@ def _load_npy_mapping(cfg: dict) -> dict[str, str]:
 
 
 def _sync_to_local_disk(cfg: dict, split_entries: list[dict]):
-    """Selective sync: only sync files we actually need for this session. 
-    Prevents crashing Colab with a 'Disk Full' error (120GB dataset vs 70GB disk)."""
+    """Best-effort sync: Copy files to local NVMe until disk is 80% full.
+    Prevents VM crashes while maximizing speed."""
     drive_npy = cfg["data"].get("preprocessed_npy_dir")
     local_npy = cfg["data"].get("local_npy_cache")
-    
-    if not local_npy or not drive_npy:
-        return None
-    
-    # 1. Map split paths to expected .npy filenames
-    npy_mapping = _load_npy_mapping(cfg)
-    needed_files = []
-    for entry in split_entries:
-        p = entry["file_location"]
-        if p in npy_mapping:
-            needed_files.append(Path(npy_mapping[p]).name)
-            
-    if not needed_files:
-        return None
+    if not local_npy or not drive_npy: return None
 
-    print(f"\n🚀 Turbo-charging: Syncing {len(needed_files)} series to local NVMe...", flush=True)
-    import subprocess
+    npy_mapping = _load_npy_mapping(cfg)
+    needed_files = [Path(npy_mapping[e["file_location"]]).name for e in split_entries if e["file_location"] in npy_mapping]
+    if not needed_files: return None
+
     import shutil
+    import subprocess
     os.makedirs(local_npy, exist_ok=True)
     
-    # Check disk space (Colab usually has ~70-100GB)
-    total, used, free = shutil.disk_usage("/content")
-    free_gb = free // (2**30)
-    
-    # 2. Write a temporary file list for rsync --files-from (most efficient way)
-    list_file = Path("/tmp/sync_list.txt")
-    with open(list_file, "w") as f:
-        for fname in needed_files:
-            f.write(f"{fname}\n")
-    
-    # 3. Selective rsync
-    # We use --ignore-existing to skip what's already there on resume
-    # and --max-size can be used if we want, but selective list is better.
-    cmd = [
-        "rsync", "-rLt", "--size-only", "--info=progress2",
-        "--files-from=" + str(list_file),
-        str(drive_npy) + "/", str(local_npy) + "/"
-    ]
-    
-    try:
-        # We check disk space again inside if we were doing a loop, 
-        # but for rsync we just let it run. If it fails, we fall back.
-        subprocess.run(cmd, check=False)
-        print("✅ Selective sync finished. Training will be lightning fast!", flush=True)
-        return local_npy
-    except Exception as e:
-        print(f"⚠️ Selective sync failed: {e}. Falling back to Drive.", flush=True)
-        return None
+    # Shuffle so we get a diverse set of patients on local disk if we hit the limit
+    random.shuffle(needed_files)
+
+    print(f"\n🚀 Turbo-charging: Best-effort sync to local NVMe...", flush=True)
+    count = 0
+    # Copy in batches to check disk space frequently
+    batch_size = 20
+    for i in range(0, len(needed_files), batch_size):
+        # Safety Check: Stop at 80% disk usage to leave room for checkpoints/OS
+        total, used, free = shutil.disk_usage("/content")
+        percent_used = (used / total) * 100
+        if percent_used > 80:
+            print(f"⚠️ Disk 80% full ({percent_used:.1f}%). Stopping sync to keep session stable.", flush=True)
+            break
+            
+        batch = needed_files[i : i + batch_size]
+        # Use rsync for the batch (very fast)
+        list_file = Path("/tmp/sync_batch.txt")
+        with open(list_file, "w") as f:
+            for fname in batch: f.write(f"{fname}\n")
+        
+        cmd = ["rsync", "-rLt", "--size-only", "--files-from=" + str(list_file), str(drive_npy) + "/", str(local_npy) + "/"]
+        subprocess.run(cmd, check=False, capture_output=True)
+        count += len(batch)
+        print(f"  Synced {count}/{len(needed_files)} series... ({percent_used:.1f}% disk used)", end="\r", flush=True)
+
+    print(f"\n✅ Sync complete ({count} series cached locally). Training starts now!", flush=True)
+    return local_npy
 
 
 def _build_loader(split_entries: list[dict], cfg: dict, split_name: str,
