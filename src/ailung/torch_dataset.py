@@ -136,6 +136,10 @@ class LIDCDenoise25DDataset(Dataset):
         import pydicom
 
         for series_path, idx in self.series_list:
+            # If npy_mode is on, only process series that were successfully converted
+            if self._npy_map and series_path not in self._npy_map:
+                continue
+
             try:
                 dcm_files = sorted(_Path(series_path).glob("*.dcm"))
                 if not dcm_files:
