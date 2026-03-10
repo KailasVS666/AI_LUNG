@@ -275,7 +275,7 @@ def main() -> None:
         train_bar = tqdm(train_loader, desc="  Train", unit="batch",
                          dynamic_ncols=True, leave=True)
 
-        for batch in train_bar:
+        for batch_idx, batch in enumerate(train_bar):
             x = batch["x"].to(device)
             y = batch["y"].to(device)
             optimizer.zero_grad()
@@ -298,6 +298,19 @@ def main() -> None:
             running_avg     = train_loss_sum / train_steps
 
             train_bar.set_postfix(loss=f"{running_avg:.4f}")
+
+            # --- RESILIENCE: Mid-epoch checkpoint (every 500 batches) ---
+            if (batch_idx + 1) % 500 == 0:
+                torch.save(
+                    {
+                        "epoch": epoch, 
+                        "model_state_dict": model.state_dict(),
+                        "optimizer_state_dict": optimizer.state_dict(),
+                        "no_improve_count": no_improve_count,
+                        "config": cfg,
+                    },
+                    output_dir / "denoiser_last.pt",
+                )
 
         train_loss = train_loss_sum / max(train_steps, 1)
 
