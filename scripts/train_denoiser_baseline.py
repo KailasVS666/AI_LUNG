@@ -235,6 +235,7 @@ def main() -> None:
     history     = {"train_loss": [], "val_loss": [], "val_psnr": [], "val_ssim": []}
     best_psnr   = -float("inf")
     start_epoch = 0
+    start_batch = -1
     no_improve_count = 0   # early stopping counter
 
     # --- Resume ---
@@ -247,6 +248,7 @@ def main() -> None:
         if "optimizer_state_dict" in ckpt:
             optimizer.load_state_dict(ckpt["optimizer_state_dict"])
         start_epoch = ckpt.get("epoch", 0)
+        start_batch = ckpt.get("batch_idx", -1)
         no_improve_count = ckpt.get("no_improve_count", 0)
         
         # Load history + best PSNR
@@ -276,6 +278,10 @@ def main() -> None:
                          dynamic_ncols=True, leave=True)
 
         for batch_idx, batch in enumerate(train_bar):
+            # Mid-epoch resume logic
+            if epoch == start_epoch and batch_idx <= start_batch:
+                continue
+
             x = batch["x"].to(device)
             y = batch["y"].to(device)
             optimizer.zero_grad()
@@ -304,6 +310,7 @@ def main() -> None:
                 torch.save(
                     {
                         "epoch": epoch, 
+                        "batch_idx": batch_idx,
                         "model_state_dict": model.state_dict(),
                         "optimizer_state_dict": optimizer.state_dict(),
                         "no_improve_count": no_improve_count,
@@ -313,6 +320,8 @@ def main() -> None:
                 )
 
         train_loss = train_loss_sum / max(train_steps, 1)
+        # Clear start_batch after first resumed epoch finishes
+        start_batch = -1
 
         # ----------------------------------------------------------------
         # VALIDATE
@@ -386,6 +395,7 @@ def main() -> None:
         torch.save(
             {
                 "epoch": epoch + 1,
+                "batch_idx": -1, # Reset batch idx for full resume
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "no_improve_count": no_improve_count,
