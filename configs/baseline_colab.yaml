@@ -32,7 +32,7 @@ loss:
 
 train:
   batch_size: 16  # Reduced from 32 to prevent T4 OOM with B5
-  num_workers: 0  # More stable for Colab network/local mix
+  num_workers: 2  # Balance between speed and Colab IO stability
   epochs: 30
   learning_rate: 0.0003
   weight_decay: 0.00001
