@@ -15,6 +15,8 @@ data:
     val: null             # Use all 153 val series
     test: null
   max_samples_per_series: 64 # Reduce from ~250 to 64 for 4x speedup
+  fast_mode: True  # Use high-speed noise simulation instead of full physics
+  fast_mode_noise_std: 0.05
 
   # Path where export_denoised.py saves the denoised .npy volumes
   # (used by Stage 2 as its input)
