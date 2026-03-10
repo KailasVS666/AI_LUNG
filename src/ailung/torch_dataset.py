@@ -136,10 +136,20 @@ class LIDCDenoise25DDataset(Dataset):
         import pydicom
 
         for series_path, idx in self.series_list:
-            # If npy_mode is on, only process series that were successfully converted
-            if self._npy_map and series_path not in self._npy_map:
-                continue
+            # If npy_mode is on, try to get shape from .npy header (extremely fast)
+            if self._npy_map and series_path in self._npy_map:
+                try:
+                    npy_path = self._npy_map[series_path]
+                    # mmap_mode='r' only reads the header, not the data
+                    z, rows, cols = np.load(npy_path, mmap_mode='r').shape
+                    self._shape_cache[series_path] = (z, rows, cols)
+                    for zi in range(self.context_slices, z - self.context_slices):
+                        self.samples.append((series_path, zi))
+                    continue
+                except Exception as e:
+                    print(f"  [WARN] Fallback to DICOM for {series_path}: {e}", flush=True)
 
+            # Fallback (Slow): Scan DICOM folders if .npy missing or corrupt
             try:
                 dcm_files = sorted(_Path(series_path).glob("*.dcm"))
                 if not dcm_files:
