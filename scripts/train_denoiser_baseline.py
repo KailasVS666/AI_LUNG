@@ -14,6 +14,7 @@ to produce the denoised .npy volumes that Stage 2 expects.
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import json
 import warnings
