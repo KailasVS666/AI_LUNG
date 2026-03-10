@@ -23,6 +23,7 @@ data:
   # Path to pre-processed .npy volumes from preprocess_to_npy.py
   # Run this ONCE before training for 10x faster data loading
   preprocessed_npy_dir: /content/drive/MyDrive/AI_LUNG_DATA/outputs/preprocessed_npy
+  local_npy_cache: /content/local_npy  # Turbo-charge by syncing to local NVMe
 
 loss:
   l1_weight: 1.0

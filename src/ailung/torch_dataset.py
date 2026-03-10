@@ -98,6 +98,7 @@ class LIDCDenoise25DDataset(Dataset):
         cache_size: int = 6,
         max_samples_per_series: int | None = 64,  # Limit slices per volume for speed
         npy_mapping: dict[str, str] | None = None,
+        local_cache_path: str | Path | None = None,
     ) -> None:
         self.hu_min             = hu_min
         self.hu_max             = hu_max
@@ -108,6 +109,7 @@ class LIDCDenoise25DDataset(Dataset):
         self.fast_mode          = fast_mode
         self.fast_mode_noise_std = fast_mode_noise_std
         self.max_samples_per_series = max_samples_per_series
+        self.local_cache_path = Path(local_cache_path) if local_cache_path else None
 
         # LRU cache: key = series_path, value = vol_nd ONLY
         # LD simulation happens per __getitem__ on 9 slices (microseconds)
@@ -199,19 +201,32 @@ class LIDCDenoise25DDataset(Dataset):
         if cached is not None:
             return cached
 
+        # 1. Try Local NVMe Cache (Super Fast)
+        npy_filename = None
+        if self._npy_map.get(series_path):
+            npy_filename = Path(self._npy_map[series_path]).name
+            
+        if self.local_cache_path and npy_filename:
+            local_path = self.local_cache_path / npy_filename
+            if local_path.exists():
+                try:
+                    vol_nd = np.load(local_path).astype(np.float32)
+                    self._cache.put(series_path, vol_nd)
+                    return vol_nd
+                except: pass
+
+        # 2. Fallback to Drive/Original NPY Path
         npy_path = self._npy_map.get(series_path)
         if npy_path and Path(npy_path).exists():
-            # Fast path: load pre-processed float16 .npy (~2s from Drive)
-            volume_nd = np.load(npy_path).astype(np.float32)
+            vol_nd = np.load(npy_path).astype(np.float32)
         else:
-            # Slow path: load raw DICOM + preprocess (~30s from Drive)
-            volume_hu, _ = build_volume(series_path)
-            volume_nd = hu_clip_normalize(volume_hu, hu_min=self.hu_min, hu_max=self.hu_max)
+            vol_hu, _ = build_volume(series_path)
+            vol_nd = hu_clip_normalize(vol_hu, hu_min=self.hu_min, hu_max=self.hu_max)
             if self.apply_clahe_flag:
-                volume_nd = apply_clahe(volume_nd)
+                vol_nd = apply_clahe(vol_nd)
 
-        self._cache.put(series_path, volume_nd)
-        return volume_nd
+        self._cache.put(series_path, vol_nd)
+        return vol_nd
 
     def __len__(self) -> int:
         return len(self.samples)

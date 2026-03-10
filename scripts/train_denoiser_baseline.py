@@ -61,8 +61,32 @@ def _load_npy_mapping(cfg: dict) -> dict[str, str]:
     return {}
 
 
+def _sync_to_local_disk(cfg: dict):
+    """Sync preprocessed .npy files from Google Drive to local VM disk for 10x speed."""
+    drive_npy = cfg["data"].get("preprocessed_npy_dir")
+    local_npy = cfg["data"].get("local_npy_cache")
+    
+    if not local_npy or not drive_npy:
+        return None
+    
+    print(f"\n🚀 Turbo-charging: Syncing to local disk ({local_npy})...", flush=True)
+    import subprocess
+    os.makedirs(local_npy, exist_ok=True)
+    
+    # Use rsync if available, otherwise cp. Colab has rsync.
+    # --size-only is fast for Drive mount.
+    cmd = f"rsync -av --size-only {drive_npy}/ {local_npy}/"
+    try:
+        subprocess.run(cmd, shell=True, check=True, capture_output=True)
+        print("✅ Local sync complete. Training will be lightning fast!", flush=True)
+        return local_npy
+    except Exception as e:
+        print(f"⚠️ Local sync failed: {e}. Falling back to Drive.", flush=True)
+        return None
+
+
 def _build_loader(split_entries: list[dict], cfg: dict, split_name: str,
-                  npy_mapping: dict | None = None) -> tuple[DataLoader, LIDCDenoise25DDataset]:
+                  npy_mapping: dict | None = None, local_cache: str | None = None) -> tuple[DataLoader, LIDCDenoise25DDataset]:
     max_cases = cfg["data"]["max_cases_per_split"].get(split_name)
     ds = LIDCDenoise25DDataset(
         split_entries=split_entries,
@@ -77,6 +101,7 @@ def _build_loader(split_entries: list[dict], cfg: dict, split_name: str,
         fast_mode_noise_std=float(cfg["data"].get("fast_mode_noise_std", 0.05)),
         max_samples_per_series=cfg["data"].get("max_samples_per_series", 64),
         npy_mapping=npy_mapping,
+        local_cache_path=local_cache,
     )
     is_train = (split_name == "train")
     sampler  = GroupedSeriesSampler(ds.samples, shuffle=is_train, seed=int(cfg["seed"]))
@@ -143,10 +168,13 @@ def main() -> None:
     early_stop_min_delta = float(cfg["train"].get("early_stop_min_delta", 0.01))
 
     print("Building datasets...", flush=True)
-    split       = load_split(cfg["data"]["splits_path"])
+    # 1. Load Data & Setup
     npy_mapping = _load_npy_mapping(cfg)
-    train_loader, train_ds = _build_loader(split["train"], cfg, "train", npy_mapping)
-    val_loader,   val_ds   = _build_loader(split["val"],   cfg, "val",   npy_mapping)
+    local_cache = _sync_to_local_disk(cfg)
+    
+    split = load_split(cfg["data"]["splits_path"])
+    train_loader, train_ds = _build_loader(split["train"], cfg, "train", npy_mapping, local_cache)
+    val_loader,   val_ds   = _build_loader(split["val"],   cfg, "val",   npy_mapping, local_cache)
     print(f"  Train batches: {len(train_loader)} | Val batches: {len(val_loader)}", flush=True)
 
     in_channels = cfg["data"]["context_slices"] * 2 + 1
