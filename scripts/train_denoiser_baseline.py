@@ -188,16 +188,13 @@ def main() -> None:
     early_stop_patience = int(cfg["train"].get("early_stop_patience", 7))
     early_stop_min_delta = float(cfg["train"].get("early_stop_min_delta", 0.01))
 
-    print("Building datasets...", flush=True)
     # 1. Load Data & Setup
     npy_mapping = _load_npy_mapping(cfg)
-    if npy_mapping:
-        print(f"  [npy] Loaded mapping for {len(npy_mapping)} series → fast loading enabled!", flush=True)
-    else:
-        print("  [npy] No pre-computed .npy files found → using DICOM (slow).", flush=True)
-
-    split = load_split(cfg["data"]["splits_path"])
+    split       = load_split(cfg["data"]["splits_path"])
     
+    if npy_mapping:
+        print(f"  [npy] Found {len(npy_mapping)} preprocessed series.", flush=True)
+
     # Only sync the files needed for TRAIN + VAL
     needed_for_sync = split["train"] + split["val"]
     local_cache     = _sync_to_local_disk(cfg, needed_for_sync)
