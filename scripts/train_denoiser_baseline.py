@@ -70,16 +70,16 @@ def _sync_to_local_disk(cfg: dict):
     if not local_npy or not drive_npy:
         return None
     
-    print(f"\n🚀 Turbo-charging: Syncing to local disk ({local_npy})...", flush=True)
     import subprocess
     os.makedirs(local_npy, exist_ok=True)
     
-    # Use rsync if available, otherwise cp. Colab has rsync.
-    # --size-only is fast for Drive mount.
-    cmd = f"rsync -av --size-only {drive_npy}/ {local_npy}/"
+    # Use -rLt (recursive, links, times) instead of -a (archive), 
+    # because Drive mount rejects permission/owner syncing (-a).
+    cmd = f"rsync -rLt --size-only --info=progress2 {drive_npy}/ {local_npy}/"
     try:
-        subprocess.run(cmd, shell=True, check=True, capture_output=True)
-        print("✅ Local sync complete. Training will be lightning fast!", flush=True)
+        # We don't use check=True here so we can continue even if some files fail
+        subprocess.run(cmd, shell=True, capture_output=False) 
+        print("✅ Local sync finished (or partially finished). Proceeding to training...", flush=True)
         return local_npy
     except Exception as e:
         print(f"⚠️ Local sync failed: {e}. Falling back to Drive.", flush=True)

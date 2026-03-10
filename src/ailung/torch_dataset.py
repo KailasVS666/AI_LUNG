@@ -142,14 +142,19 @@ class LIDCDenoise25DDataset(Dataset):
         # Fast path: retrieves volume shapes from .npy headers if available, else DICOM
         def _get_shape_fast(path_idx):
             path, _ = path_idx
-            # Skip series that were not successfully pre-processed (the corrupt ones)
-            if self._npy_map and path not in self._npy_map:
-                return None
             
             # 1. Try NPY fast path (reads ONLY the header, very fast)
-            if self._npy_map and path in self._npy_map:
+            # Check local cache first, then Drive mapping
+            potential_npy = None
+            if self.local_cache_path and self._npy_map.get(path):
+                fname = Path(self._npy_map[path]).name
+                potential_npy = self.local_cache_path / fname
+            elif self._npy_map.get(path):
+                potential_npy = Path(self._npy_map[path])
+                
+            if potential_npy and potential_npy.exists():
                 try:
-                    res = np.load(self._npy_map[path], mmap_mode='r')
+                    res = np.load(str(potential_npy), mmap_mode='r')
                     return path, res.shape
                 except: pass
             
@@ -160,10 +165,11 @@ class LIDCDenoise25DDataset(Dataset):
                     d = pydicom.dcmread(str(dcm_files[0]), stop_before_pixels=True)
                     return path, (len(dcm_files), int(d.Rows), int(d.Columns))
             except: pass
+            
             return None
 
         print(f"  Scanning volume shapes for {len(self.series_list)} series (threaded)...", flush=True)
-        with ThreadPoolExecutor(max_workers=24) as executor:
+        with ThreadPoolExecutor(max_workers=12) as executor:
             # tqdm(executor.map) gives us a real-time progress bar for the scan
             shapes = list(_tqdm(executor.map(_get_shape_fast, self.series_list), 
                                total=len(self.series_list), desc="  Scan progress"))
