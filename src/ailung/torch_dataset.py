@@ -316,7 +316,9 @@ class LIDCRecon3DPatchDataset(Dataset):
         max_cases: int | None = None,
         seed: int = 42,
         denoised_vol_dir: str | Path | None = None,
-        noise_std: float = 0.03,   # fallback noise when denoised_vol_dir=None
+        noise_std: float = 0.03,
+        cache_size: int = 6,
+        npy_mapping: dict[str, str] | None = None,
     ) -> None:
         self.hu_min             = hu_min
         self.hu_max             = hu_max
@@ -325,71 +327,96 @@ class LIDCRecon3DPatchDataset(Dataset):
         self.noise_std          = noise_std
         self.rng                = random.Random(seed)
         self.denoised_vol_dir   = Path(denoised_vol_dir) if denoised_vol_dir else None
+        self._npy_map           = npy_mapping or {}
+        self._cache             = _LRUCache(maxsize=cache_size)
 
         selected = split_entries[:max_cases] if max_cases is not None else split_entries
 
-        self.volumes_nd: dict[str, np.ndarray] = {}   # normal-dose (ground truth)
-        self.volumes_in: dict[str, np.ndarray] = {}   # denoised input (or noisy fallback)
-        self.samples: list[tuple[str, int, int, int]] = []
-
+        # We store just the metadata; volumes load lazily in __getitem__
+        self.samples: list[dict] = []
         pz, py, px = self.patch_size
+
+        print(f"Initializing Stage 2 Dataset ({len(selected)} volumes)...", flush=True)
 
         for item in selected:
             series_path = str(item["file_location"])
             series_uid  = item.get("series_uid", "")
 
-            volume_hu, _ = build_volume(series_path)
-            volume_nd    = hu_clip_normalize(volume_hu, hu_min=self.hu_min, hu_max=self.hu_max)
-
-            if volume_nd.shape[0] < pz or volume_nd.shape[1] < py or volume_nd.shape[2] < px:
-                continue
-
-            self.volumes_nd[series_path] = volume_nd
-
-            # Try to load pre-exported denoised volume
-            if self.denoised_vol_dir is not None:
-                den_path = self.denoised_vol_dir / f"{series_uid}_denoised.npy"
-                if den_path.exists():
-                    volume_in = np.load(str(den_path))
-                else:
-                    # Fallback: noisy simulation
-                    noise = np.random.normal(0.0, self.noise_std, volume_nd.shape).astype(np.float32)
-                    volume_in = np.clip(volume_nd + noise, 0.0, 1.0)
+            # If we have an npy map, use it for z-count check to stay fast
+            if self._npy_map and series_path in self._npy_map:
+                try:
+                    # mmap_mode='r' only reads the header
+                    shape = np.load(self._npy_map[series_path], mmap_mode='r').shape
+                    z_dim, y_dim, x_dim = shape
+                except: continue
             else:
-                # No denoised dir provided — use Gaussian noisy volume
-                noise = np.random.normal(0.0, self.noise_std, volume_nd.shape).astype(np.float32)
-                volume_in = np.clip(volume_nd + noise, 0.0, 1.0)
+                # Fallback: lightweight DICOM shape check
+                try:
+                    dcm_files = list(Path(series_path).glob("*.dcm"))
+                    z_dim, y_dim, x_dim = len(dcm_files), 512, 512
+                except: continue
 
-            self.volumes_in[series_path] = volume_in
-
-            z_max = volume_nd.shape[0] - pz
-            y_max = volume_nd.shape[1] - py
-            x_max = volume_nd.shape[2] - px
+            if z_dim < pz: continue
 
             for _ in range(self.patches_per_volume):
-                sz = self.rng.randint(0, z_max)
-                sy = self.rng.randint(0, y_max)
-                sx = self.rng.randint(0, x_max)
-                self.samples.append((series_path, sz, sy, sx))
+                sz = self.rng.randint(0, z_dim - pz)
+                sy = self.rng.randint(0, y_dim - py)
+                sx = self.rng.randint(0, x_dim - px)
+                self.samples.append({
+                    "series_path": series_path, 
+                    "series_uid": series_uid,
+                    "coords": (sz, sy, sx)
+                })
 
         if not self.samples:
-            raise RuntimeError(
-                "No 3D patch samples created. Reduce patch_size or increase max_cases."
-            )
+            raise RuntimeError("No 3D patch samples created.")
+
+    def _load_volumes(self, series_path: str, series_uid: str) -> tuple[np.ndarray, np.ndarray]:
+        """Lazy load ND volume and Denoised/Input volume."""
+        cached = self._cache.get(series_path)
+        if cached is not None:
+            return cached
+
+        # 1. Load Ground Truth (Normal Dose)
+        npy_path = self._npy_map.get(series_path)
+        if npy_path and Path(npy_path).exists():
+            vol_nd = np.load(npy_path).astype(np.float32)
+        else:
+            vol_hu, _ = build_volume(series_path)
+            vol_nd = hu_clip_normalize(vol_hu, self.hu_min, self.hu_max)
+
+        # 2. Load Input (Denoised)
+        if self.denoised_vol_dir is not None:
+            den_path = self.denoised_vol_dir / f"{series_uid}_denoised.npy"
+            if den_path.exists():
+                vol_in = np.load(str(den_path)).astype(np.float32)
+            else:
+                noise = np.random.normal(0.0, self.noise_std, vol_nd.shape).astype(np.float32)
+                vol_in = np.clip(vol_nd + noise, 0.0, 1.0)
+        else:
+            noise = np.random.normal(0.0, self.noise_std, vol_nd.shape).astype(np.float32)
+            vol_in = np.clip(vol_nd + noise, 0.0, 1.0)
+
+        self._cache.put(series_path, (vol_nd, vol_in))
+        return vol_nd, vol_in
 
     def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
-        series_path, sz, sy, sx = self.samples[index]
+        sample = self.samples[index]
+        series_path, series_uid = sample["series_path"], sample["series_uid"]
+        sz, sy, sx = sample["coords"]
         pz, py, px = self.patch_size
 
-        target = self.volumes_nd[series_path][sz:sz+pz, sy:sy+py, sx:sx+px].astype(np.float32)
-        source = self.volumes_in[series_path][sz:sz+pz, sy:sy+py, sx:sx+px].astype(np.float32)
+        vol_nd, vol_in = self._load_volumes(series_path, series_uid)
+
+        target = vol_nd[sz:sz+pz, sy:sy+py, sx:sx+px]
+        source = vol_in[sz:sz+pz, sy:sy+py, sx:sx+px]
 
         return {
-            "x": torch.from_numpy(source).unsqueeze(0),   # (1, D, H, W)  denoised input
-            "y": torch.from_numpy(target).unsqueeze(0),   # (1, D, H, W)  normal-dose target
+            "x": torch.from_numpy(source).unsqueeze(0),
+            "y": torch.from_numpy(target).unsqueeze(0),
         }
 
 
@@ -420,6 +447,8 @@ class NoduleDetectionDataset(Dataset):
         max_cases: int | None = None,
         seed: int = 42,
         reconstructed_vol_dir: str | Path | None = None,
+        cache_size: int = 6,
+        npy_mapping: dict[str, str] | None = None,
     ) -> None:
         self.hu_min = hu_min
         self.hu_max = hu_max
@@ -427,19 +456,16 @@ class NoduleDetectionDataset(Dataset):
         self.negatives_per_positive = negatives_per_positive
         self.xml_dir = Path(xml_dir)
         self.rng = random.Random(seed)
-        self.reconstructed_vol_dir = (
-            Path(reconstructed_vol_dir) if reconstructed_vol_dir else None
-        )
+        self.reconstructed_vol_dir = Path(reconstructed_vol_dir) if reconstructed_vol_dir else None
+        self._npy_map = npy_mapping or {}
+        self._cache = _LRUCache(maxsize=cache_size)
 
         print("Building series UID → XML mapping...")
         self.series_to_xml = build_series_to_xml_mapping(xml_dir)
-        print(f"Found {len(self.series_to_xml)} XML files with series UIDs")
 
         selected = split_entries[:max_cases] if max_cases is not None else split_entries
-
         self.samples: list[dict] = []
-        self.volumes: dict[str, np.ndarray] = {}
-        self.spacings: dict[str, tuple[float, float, float]] = {}
+        self._metadata: dict[str, tuple] = {} # series_path -> (volume_shape, spacing)
 
         pz, py, px = self.patch_size
 
@@ -447,99 +473,78 @@ class NoduleDetectionDataset(Dataset):
             series_path = str(item["file_location"])
             series_uid  = item["series_uid"]
 
-            volume_hu, spacing = build_volume(series_path)
-            volume_nd = hu_clip_normalize(volume_hu, hu_min=self.hu_min, hu_max=self.hu_max)
-
-            if volume_nd.shape[0] < pz or volume_nd.shape[1] < py or volume_nd.shape[2] < px:
-                continue
-
-            # Try to load reconstructed 3D volume; fall back to normal-dose
-            if self.reconstructed_vol_dir is not None:
-                rec_path = self.reconstructed_vol_dir / f"{series_uid}_recon3d.npy"
-                vol = np.load(str(rec_path)) if rec_path.exists() else volume_nd
-            else:
-                vol = volume_nd
-
-            self.volumes[series_path]  = vol
-            self.spacings[series_path] = spacing
+            # Lightweight metadata load
+            try:
+                if self._npy_map and series_path in self._npy_map:
+                    v_shape = np.load(self._npy_map[series_path], mmap_mode='r').shape
+                    v_spacing = (1.0, 1.0, 1.0) # Assume standardized for Stage 3
+                else:
+                    dcm_files = list(Path(series_path).glob("*.dcm"))
+                    v_shape = (len(dcm_files), 512, 512)
+                    v_spacing = (1.0, 1.0, 1.0) # placeholders
+                
+                self._metadata[series_path] = (v_shape, v_spacing)
+            except: continue
 
             xml_path = self.series_to_xml.get(series_uid)
             if xml_path is None:
                 self._add_negative_samples(series_path, self.negatives_per_positive * 3)
                 continue
 
-            nodule_candidates = build_nodule_candidates(
-                xml_path, spacing, min_malignancy=min_malignancy
-            )
-
+            nodule_candidates = build_nodule_candidates(xml_path, v_spacing, min_malignancy=min_malignancy)
             for candidate in nodule_candidates:
-                self.samples.append({
-                    "series_path": series_path,
-                    "center_mm":   candidate["centroid_3d"],
-                    "label": 1,
-                })
+                self.samples.append({"series_path": series_path, "series_uid": series_uid, "center_mm": candidate["centroid_3d"], "label": 1})
 
-            num_negatives = max(len(nodule_candidates) * self.negatives_per_positive, 1)
-            self._add_negative_samples(series_path, num_negatives)
+            self._add_negative_samples(series_path, max(len(nodule_candidates) * self.negatives_per_positive, 1))
 
-        if not self.samples:
-            raise RuntimeError(
-                "No detection samples created. Check XML paths and min_malignancy."
-            )
+    def _get_volume(self, series_path: str, series_uid: str) -> np.ndarray:
+        cached = self._cache.get(series_path)
+        if cached is not None: return cached
+
+        # Try stage-specific reconstructed volume first
+        if self.reconstructed_vol_dir is not None:
+            rec_path = self.reconstructed_vol_dir / f"{series_uid}_recon3d.npy"
+            if rec_path.exists():
+                vol = np.load(str(rec_path)).astype(np.float32)
+                self._cache.put(series_path, vol)
+                return vol
+
+        # Fallback to pre-processed ND volume
+        npy_path = self._npy_map.get(series_path)
+        if npy_path and Path(npy_path).exists():
+            vol = np.load(npy_path).astype(np.float32)
+        else:
+            hu, _ = build_volume(series_path)
+            vol = hu_clip_normalize(hu, self.hu_min, self.hu_max)
+        
+        self._cache.put(series_path, vol)
+        return vol
 
     def _add_negative_samples(self, series_path: str, count: int) -> None:
-        vol     = self.volumes[series_path]
-        spacing = self.spacings[series_path]
+        v_shape, spacing = self._metadata[series_path]
         pz, py, px = self.patch_size
-
-        z_max = vol.shape[0] - pz
-        y_max = vol.shape[1] - py
-        x_max = vol.shape[2] - px
-
         for _ in range(count):
-            sz = self.rng.randint(0, z_max)
-            sy = self.rng.randint(0, y_max)
-            sx = self.rng.randint(0, x_max)
-
-            z_mm = (sz + pz / 2) * spacing[0]
-            y_mm = (sy + py / 2) * spacing[1]
-            x_mm = (sx + px / 2) * spacing[2]
-
+            sz = self.rng.randint(0, v_shape[0] - pz)
+            sy = self.rng.randint(0, v_shape[1] - py)
+            sx = self.rng.randint(0, v_shape[2] - px)
             self.samples.append({
-                "series_path": series_path,
-                "center_mm":   (z_mm, y_mm, x_mm),
-                "label": 0,
+                "series_path": series_path, 
+                "series_uid": "", # only needed for recon path
+                "center_mm": ((sz+pz/2)*spacing[0], (sy+py/2)*spacing[1], (sx+px/2)*spacing[2]),
+                "label": 0
             })
 
     def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
-        sample      = self.samples[index]
-        series_path = sample["series_path"]
-        center_mm   = sample["center_mm"]
-        label       = sample["label"]
-
-        vol     = self.volumes[series_path]
-        spacing = self.spacings[series_path]
+        s = self.samples[index]
+        vol = self._get_volume(s["series_path"], s.get("series_uid", ""))
+        v_shape, spacing = self._metadata[s["series_path"]]
         pz, py, px = self.patch_size
 
-        z_voxel = int(center_mm[0] / spacing[0])
-        y_voxel = int(center_mm[1] / spacing[1])
-        x_voxel = int(center_mm[2] / spacing[2])
-
-        sz = max(0, min(z_voxel - pz // 2, vol.shape[0] - pz))
-        sy = max(0, min(y_voxel - py // 2, vol.shape[1] - py))
-        sx = max(0, min(x_voxel - px // 2, vol.shape[2] - px))
-
+        zv, yv, xv = int(s["center_mm"][0]/spacing[0]), int(s["center_mm"][1]/spacing[1]), int(s["center_mm"][2]/spacing[2])
+        sz, sy, sx = max(0, min(zv-pz//2, v_shape[0]-pz)), max(0, min(yv-py//2, v_shape[1]-py)), max(0, min(xv-px//2, v_shape[2]-px))
         patch = vol[sz:sz+pz, sy:sy+py, sx:sx+px].astype(np.float32)
 
-        if patch.shape != (pz, py, px):
-            padded = np.zeros((pz, py, px), dtype=np.float32)
-            padded[:patch.shape[0], :patch.shape[1], :patch.shape[2]] = patch
-            patch = padded
-
-        return {
-            "x": torch.from_numpy(patch).unsqueeze(0),   # (1, pz, py, px)
-            "y": torch.tensor(label, dtype=torch.long),
-        }
+        return {"x": torch.from_numpy(patch).unsqueeze(0), "y": torch.tensor(s["label"], dtype=torch.long)}
