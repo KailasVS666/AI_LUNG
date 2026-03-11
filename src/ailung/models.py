@@ -174,11 +174,12 @@ def _ssim2d(
     C1: float = 0.01 ** 2,
     C2: float = 0.03 ** 2,
 ) -> torch.Tensor:
-    """Differentiable SSIM on 2D single-channel tensors (B,1,H,W). Returns mean SSIM."""
-    assert pred.shape == target.shape
+    # Force High Precision for SSIM math (prevents NaNs in AMP)
+    pred_32   = pred.to(torch.float32)
+    target_32 = target.to(torch.float32)
 
-    # Gaussian kernel
-    coords = torch.arange(window_size, dtype=pred.dtype, device=pred.device)
+    # Gaussian kernel (stays float32)
+    coords = torch.arange(window_size, dtype=torch.float32, device=pred.device)
     coords -= window_size // 2
     g = torch.exp(-(coords ** 2) / (2 * 1.5 ** 2))
     g = g / g.sum()
@@ -189,20 +190,20 @@ def _ssim2d(
     def conv(t: torch.Tensor) -> torch.Tensor:
         return F.conv2d(t, kernel, padding=pad, groups=1)
 
-    mu1 = conv(pred)
-    mu2 = conv(target)
+    mu1 = conv(pred_32)
+    mu2 = conv(target_32)
 
     mu1_sq = mu1 * mu1
     mu2_sq = mu2 * mu2
     mu1_mu2 = mu1 * mu2
 
-    sigma1_sq = torch.clamp(conv(pred * pred) - mu1_sq, min=1e-8)
-    sigma2_sq = torch.clamp(conv(target * target) - mu2_sq, min=1e-8)
-    sigma12   = conv(pred * target) - mu1_mu2
+    sigma1_sq = torch.clamp(conv(pred_32 * pred_32) - mu1_sq, min=1e-4)
+    sigma2_sq = torch.clamp(conv(target_32 * target_32) - mu2_sq, min=1e-4)
+    sigma12   = conv(pred_32 * target_32) - mu1_mu2
 
     numerator   = (2 * mu1_mu2 + C1) * (2 * sigma12 + C2)
-    # Added epsilon to denominator for final safety check
-    denominator = (mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2) + 1e-8
+    # 1e-4 epsilon for high numerical stability in float16/AMP
+    denominator = (mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2) + 1e-4
 
     score = numerator / denominator
     return score.mean()
