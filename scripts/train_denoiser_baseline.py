@@ -107,7 +107,8 @@ def _sync_to_local_disk(cfg: dict, split_entries: list[dict]):
 
 
 def _build_loader(split_entries: list[dict], cfg: dict, split_name: str,
-                  npy_mapping: dict | None = None, local_cache: str | None = None) -> tuple[DataLoader, LIDCDenoise25DDataset]:
+                  npy_mapping: dict | None = None, local_cache: str | None = None,
+                  start_batch: int = 0) -> tuple[DataLoader, LIDCDenoise25DDataset]:
     max_cases = cfg["data"]["max_cases_per_split"].get(split_name)
     ds = LIDCDenoise25DDataset(
         split_entries=split_entries,
@@ -125,7 +126,9 @@ def _build_loader(split_entries: list[dict], cfg: dict, split_name: str,
         local_cache_path=local_cache,
     )
     is_train = (split_name == "train")
-    sampler  = GroupedSeriesSampler(ds.samples, shuffle=is_train, seed=int(cfg["seed"]))
+    sampler  = GroupedSeriesSampler(ds, batch_size=cfg["train"]["batch_size"], 
+                                    shuffle=is_train, seed=int(cfg["seed"]), 
+                                    start_offset=(start_batch if is_train else 0))
     loader   = DataLoader(
         ds,
         batch_size=cfg["train"]["batch_size"],
@@ -199,7 +202,7 @@ def main() -> None:
     needed_for_sync = split["train"] + split["val"]
     local_cache     = _sync_to_local_disk(cfg, needed_for_sync)
     
-    train_loader, train_ds = _build_loader(split["train"], cfg, "train", npy_mapping, local_cache)
+    train_loader, train_ds = _build_loader(split["train"], cfg, "train", npy_mapping, local_cache, start_batch=start_batch+1)
     val_loader,   val_ds   = _build_loader(split["val"],   cfg, "val",   npy_mapping, local_cache)
     print(f"  Train batches: {len(train_loader)} | Val batches: {len(val_loader)}", flush=True)
 
@@ -280,10 +283,9 @@ def main() -> None:
                          dynamic_ncols=True, leave=True)
 
         for batch_idx, batch in enumerate(train_bar):
-            # Mid-epoch resume logic
-            if epoch == start_epoch and batch_idx <= start_batch:
-                continue
-
+            # The sampler now handles the skipping at the index level
+            # batch_idx here will start at 0, but the data will be from (start_batch + 1)
+            
             x = batch["x"].to(device)
             y = batch["y"].to(device)
             optimizer.zero_grad()

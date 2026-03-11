@@ -284,41 +284,50 @@ class GroupedSeriesSampler(torch.utils.data.Sampler):
     Shuffle=True shuffles the ORDER of series across epochs, and shuffles slice
     order within each series, so the model still sees diverse training signal.
     """
-    def __init__(
-        self,
-        samples: list[tuple[str, int]],
-        shuffle: bool = True,
-        seed: int = 42,
-    ) -> None:
-        self.samples = samples
+    def __init__(self, dataset, batch_size, shuffle=True, seed=42, start_offset=0):
+        self.dataset = dataset
+        self.batch_size = batch_size
         self.shuffle = shuffle
-        self.epoch   = 0
-        self.seed    = seed
+        self.seed = seed
+        self.epoch = 0
+        self.start_offset = start_offset # Skip this many BATCHES
 
         # Group indices by series_path
-        self._groups: dict[str, list[int]] = {}
-        for i, (series_path, _) in enumerate(samples):
-            self._groups.setdefault(series_path, []).append(i)
+        self.series_groups: dict[str, list[int]] = {}
+        for i, (series_path, _) in enumerate(dataset.samples):
+            self.series_groups.setdefault(series_path, []).append(i)
 
     def set_epoch(self, epoch: int) -> None:
         """Call before each epoch for reproducible shuffling."""
         self.epoch = epoch
 
     def __len__(self) -> int:
-        return len(self.samples)
+        return len(self.dataset.samples)
 
     def __iter__(self):
+        # Deterministic shuffle based on epoch
         rng = np.random.default_rng(self.seed + self.epoch)
-        series_keys = list(self._groups.keys())
-
+        
+        series_indices = list(self.series_groups.keys())
         if self.shuffle:
-            rng.shuffle(series_keys)
+            rng.shuffle(series_indices)
 
-        for key in series_keys:
-            indices = self._groups[key].copy()
+        all_indices = []
+        for s_idx in series_indices:
+            group = list(self.series_groups[s_idx])
             if self.shuffle:
-                rng.shuffle(indices)
-            yield from indices
+                rng.shuffle(group)
+            all_indices.extend(group)
+
+        # Apply start_offset for instant resume (Peak Performance)
+        if self.start_offset > 0:
+            # We skip by BATCHES, so we need to know the batch size.
+            # But the sampler works on SAMPLES. 
+            # We convert our batch offset into a sample offset.
+            sample_offset = self.start_offset * self.batch_size
+            all_indices = all_indices[sample_offset:]
+
+        return iter(all_indices)
 
 
 # ---------------------------------------------------------------------------
