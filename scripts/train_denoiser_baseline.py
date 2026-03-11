@@ -191,57 +191,32 @@ def main() -> None:
     early_stop_patience = int(cfg["train"].get("early_stop_patience", 7))
     early_stop_min_delta = float(cfg["train"].get("early_stop_min_delta", 0.01))
 
-    # 1. Load Data & Setup
-    npy_mapping = _load_npy_mapping(cfg)
-    split       = load_split(cfg["data"]["splits_path"])
-    
-    if npy_mapping:
-        print(f"  [npy] Found {len(npy_mapping)} preprocessed series.", flush=True)
+    # --- 1. Runtime Config & Globals ---
+    use_amp    = cfg["runtime"].get("mixed_precision", False) and torch.cuda.is_available()
+    scaler     = torch.amp.GradScaler("cuda") if use_amp else None
+    output_dir = Path(cfg["train"]["output_dir"])
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Only sync the files needed for TRAIN + VAL
-    needed_for_sync = split["train"] + split["val"]
-    local_cache     = _sync_to_local_disk(cfg, needed_for_sync)
-    
-    train_loader, train_ds = _build_loader(split["train"], cfg, "train", npy_mapping, local_cache, start_batch=start_batch+1)
-    val_loader,   val_ds   = _build_loader(split["val"],   cfg, "val",   npy_mapping, local_cache)
-    print(f"  Train batches: {len(train_loader)} | Val batches: {len(val_loader)}", flush=True)
-
-    in_channels = cfg["data"]["context_slices"] * 2 + 1
-    model  = Denoise25DUNet(in_channels=in_channels, out_channels=1)
     device = _resolve_device(cfg["runtime"]["device"])
-    model  = model.to(device)
-    print(f"  Device: {device} | AMP: {cfg['runtime'].get('mixed_precision', False)}", flush=True)
-
-    criterion = DenoiseLoss(
-        l1_weight=float(cfg.get("loss", {}).get("l1_weight", 1.0)),
-        ssim_weight=float(cfg.get("loss", {}).get("ssim_weight", 0.5)),
-        grad_weight=float(cfg.get("loss", {}).get("grad_weight", 0.2)),
-    )
+    in_channels = cfg["data"]["context_slices"] * 2 + 1
+    model = Denoise25DUNet(in_channels=in_channels, out_channels=1).to(device)
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=float(cfg["train"]["learning_rate"]),
         weight_decay=float(cfg["train"]["weight_decay"]),
     )
-
-    # ReduceLROnPlateau — halve LR if val PSNR doesn't improve for 3 epochs
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="max", factor=0.5, patience=3
     )
-
-    use_amp = cfg["runtime"].get("mixed_precision", False) and torch.cuda.is_available()
-    scaler  = torch.amp.GradScaler("cuda") if use_amp else None
-
-    output_dir = Path(cfg["train"]["output_dir"])
-    output_dir.mkdir(parents=True, exist_ok=True)
 
     history     = {"train_loss": [], "val_loss": [], "val_psnr": [], "val_ssim": []}
     best_psnr   = -float("inf")
     start_epoch = 0
     start_batch = -1
-    no_improve_count = 0   # early stopping counter
+    no_improve_count = 0 
 
-    # --- Resume ---
+    # --- 2. RESUME Logic ---
     resume_path = output_dir / "denoiser_last.pt"
     hist_path   = output_dir / "history.json"
     if resume_path.exists():
@@ -250,11 +225,10 @@ def main() -> None:
         model.load_state_dict(ckpt["model_state_dict"])
         if "optimizer_state_dict" in ckpt:
             optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-        start_epoch = ckpt.get("epoch", 0)
-        start_batch = ckpt.get("batch_idx", -1)
+        start_epoch      = ckpt.get("epoch", 0)
+        start_batch      = ckpt.get("batch_idx", -1)
         no_improve_count = ckpt.get("no_improve_count", 0)
-        
-        # Load history + best PSNR
+
         if hist_path.exists():
             with open(hist_path, "r", encoding="utf-8") as f:
                 history = json.load(f)
@@ -263,6 +237,27 @@ def main() -> None:
         
         batch_msg = f"Batch: {start_batch}" if start_batch > 0 else "Start of Epoch"
         print(f"  ✓ Resumed Epoch: {start_epoch} | {batch_msg} | Best PSNR: {best_psnr:.2f} dB", flush=True)
+
+    # --- 3. Load Data & Sync ---
+    npy_mapping = _load_npy_mapping(cfg)
+    split       = load_split(cfg["data"]["splits_path"])
+    if npy_mapping:
+        print(f"  [npy] Found {len(npy_mapping)} preprocessed series.", flush=True)
+
+    needed_for_sync = split["train"] + split["val"]
+    local_cache     = _sync_to_local_disk(cfg, needed_for_sync)
+    
+    train_loader, train_ds = _build_loader(split["train"], cfg, "train", npy_mapping, local_cache, start_batch=start_batch)
+    val_loader,   val_ds   = _build_loader(split["val"],   cfg, "val",   npy_mapping, local_cache)
+    print(f"  Train batches: {len(train_loader)} | Val batches: {len(val_loader)}", flush=True)
+
+    criterion = DenoiseLoss(
+        l1_weight=float(cfg.get("loss", {}).get("l1_weight", 1.0)),
+        ssim_weight=float(cfg.get("loss", {}).get("ssim_weight", 0.5)),
+        grad_weight=float(cfg.get("loss", {}).get("grad_weight", 0.2)),
+    )
+
+    total_epochs = cfg["train"]["epochs"]
 
     total_epochs = cfg["train"]["epochs"]
 
