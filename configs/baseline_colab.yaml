@@ -14,8 +14,8 @@ data:
     train: null           # Use all 713 training series
     val: null             # Use all 153 val series
     test: null
-  max_samples_per_series: 64 # Reduce from ~250 to 64 for 4x speedup
-  fast_mode: True  # Use high-speed noise simulation instead of full physics
+  max_samples_per_series: null # Peak Performance: Use all slices
+  fast_mode: False  # Peak Performance: Use full Radon/Poisson physics
   fast_mode_noise_std: 0.05
 
   # Path where export_denoised.py saves the denoised .npy volumes
