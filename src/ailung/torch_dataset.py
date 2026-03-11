@@ -302,7 +302,12 @@ class GroupedSeriesSampler(torch.utils.data.Sampler):
         self.epoch = epoch
 
     def __len__(self) -> int:
-        return len(self.dataset.samples)
+        total_samples = len(self.dataset.samples)
+        if self.start_offset <= 0:
+            return total_samples
+        # Return only the remaining samples
+        remaining = total_samples - (self.start_offset * self.batch_size)
+        return max(remaining, 0)
 
     def __iter__(self):
         # Deterministic shuffle based on epoch

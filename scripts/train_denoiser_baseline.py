@@ -247,9 +247,13 @@ def main() -> None:
     needed_for_sync = split["train"] + split["val"]
     local_cache     = _sync_to_local_disk(cfg, needed_for_sync)
     
-    train_loader, train_ds = _build_loader(split["train"], cfg, "train", npy_mapping, local_cache, start_batch=start_batch)
+    train_loader, train_ds = _build_loader(split["train"], cfg, "train", npy_mapping, local_cache, 
+                                           start_batch=(start_batch + 1 if start_batch >= 0 else 0))
     val_loader,   val_ds   = _build_loader(split["val"],   cfg, "val",   npy_mapping, local_cache)
-    print(f"  Train batches: {len(train_loader)} | Val batches: {len(val_loader)}", flush=True)
+    
+    # Calculate effective train batches remaining
+    total_train_batches = len(train_loader)
+    print(f"  Train: {total_train_batches} batches remaining | Val: {len(val_loader)} batches", flush=True)
 
     criterion = DenoiseLoss(
         l1_weight=float(cfg.get("loss", {}).get("l1_weight", 1.0)),
