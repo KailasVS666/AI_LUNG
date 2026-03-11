@@ -310,10 +310,11 @@ def main() -> None:
 
             # --- RESILIENCE: Mid-epoch checkpoint (every 500 batches) ---
             if (batch_idx + 1) % 500 == 0:
+                current_global_batch = batch_idx + (start_batch + 1 if start_batch >= 0 else 0)
                 torch.save(
                     {
                         "epoch": epoch, 
-                        "batch_idx": batch_idx,
+                        "batch_idx": current_global_batch,
                         "model_state_dict": model.state_dict(),
                         "optimizer_state_dict": optimizer.state_dict(),
                         "no_improve_count": no_improve_count,
