@@ -278,8 +278,18 @@ def main() -> None:
         train_loss_sum = 0.0
         train_steps    = 0
 
-        train_bar = tqdm(train_loader, desc="  Train", unit="batch",
-                         dynamic_ncols=True, leave=True)
+        # Calculate global total for progress bar clarity
+        total_global_batches = len(train_loader) + (start_batch + 1 if start_batch >= 0 else 0)
+
+        train_bar = tqdm(
+            train_loader, 
+            desc="  Train", 
+            unit="batch",
+            dynamic_ncols=True, 
+            leave=True,
+            initial=(start_batch + 1 if start_batch >= 0 else 0),
+            total=total_global_batches
+        )
 
         for batch_idx, batch in enumerate(train_bar):
             # The sampler now handles the skipping at the index level
@@ -319,8 +329,8 @@ def main() -> None:
 
             train_bar.set_postfix(loss=f"{running_avg:.4f}")
 
-            # --- RESILIENCE: Mid-epoch checkpoint (every 500 batches) ---
-            if (batch_idx + 1) % 500 == 0:
+            # --- RESILIENCE: Mid-epoch checkpoint (Every 200 batches for Colab) ---
+            if (batch_idx + 1) % 200 == 0:
                 current_global_batch = batch_idx + (start_batch + 1 if start_batch >= 0 else 0)
                 ckpt_path = output_dir / "denoiser_last.pt"
                 tmp_path  = output_dir / "denoiser_last.tmp"
