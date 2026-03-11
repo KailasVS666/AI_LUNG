@@ -238,37 +238,51 @@ class LIDCDenoise25DDataset(Dataset):
         return len(self.samples)
 
     def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
-        series_path, z  = self.samples[index]
-        series_idx      = self._series_idx.get(series_path, 0)
+        try:
+            series_path, z  = self.samples[index]
+            series_idx      = self._series_idx.get(series_path, 0)
 
-        # Load (or fetch from cache) the CLEAN normal-dose volume
-        vol_nd = self._load_nd_volume(series_path)
+            # Load (or fetch from cache) the CLEAN normal-dose volume
+            vol_nd = self._load_nd_volume(series_path)
 
-        start = z - self.context_slices
-        end   = z + self.context_slices + 1
-        nd_window = vol_nd[start:end]    # (9, H, W) — normal-dose window
-        nd_slice  = vol_nd[z]             # (H, W)   — central target slice
+            start = z - self.context_slices
+            end   = z + self.context_slices + 1
+            nd_window = vol_nd[start:end]    # (9, H, W) — normal-dose window
+            nd_slice  = vol_nd[z]             # (H, W)   — central target slice
 
-        # Simulate low-dose on ONLY the 9 needed slices — microseconds
-        if self.fast_mode:
-            rng      = np.random.default_rng(self.seed + series_idx * 1000 + z)
-            noise    = rng.normal(0.0, self.fast_mode_noise_std,
-                                  nd_window.shape).astype(np.float32)
-            ld_stack = np.clip(nd_window + noise, 0.0, 1.0)
-        else:
-            # Fast pixel-space Beer-Lambert + Poisson (replaces Radon for online training)
-            ld_stack = simulate_low_dose_fast(
-                nd_window,
-                i0=self.low_dose_i0,
-                seed=self.seed + series_idx * 1000 + z,
-            )
+            # Simulate low-dose on ONLY the 9 needed slices — microseconds
+            if self.fast_mode:
+                rng      = np.random.default_rng(self.seed + series_idx * 1000 + z)
+                noise    = rng.normal(0.0, self.fast_mode_noise_std,
+                                      nd_window.shape).astype(np.float32)
+                ld_stack = np.clip(nd_window + noise, 0.0, 1.0)
+            else:
+                # Fast pixel-space Beer-Lambert + Poisson (replaces Radon for online training)
+                ld_stack = simulate_low_dose_fast(
+                    nd_window,
+                    i0=self.low_dose_i0,
+                    seed=self.seed + series_idx * 1000 + z,
+                )
 
-        return {
-            "ld": torch.from_numpy(ld_stack.astype(np.float32)),
-            "nd": torch.from_numpy(nd_slice.astype(np.float32)).unsqueeze(0),
-            "x":  torch.from_numpy(ld_stack.astype(np.float32)),
-            "y":  torch.from_numpy(nd_slice.astype(np.float32)).unsqueeze(0),
-        }
+            return {
+                "ld": torch.from_numpy(ld_stack.astype(np.float32)),
+                "nd": torch.from_numpy(nd_slice.astype(np.float32)).unsqueeze(0),
+                "x":  torch.from_numpy(ld_stack.astype(np.float32)),
+                "y":  torch.from_numpy(nd_slice.astype(np.float32)).unsqueeze(0),
+            }
+        except (ValueError, RuntimeError, IndexError) as e:
+            # --- SELF-HEALING: Log the corruption and skip to NEXT sample ---
+            series_path, _ = self.samples[index]
+            print(f"\n⚠️ CORRUPTED DATA DETECTED: {series_path}")
+            print(f"   Reason: {str(e)}")
+            
+            # Log to a file so user can clean up the dataset later
+            with open("corrupted_files.txt", "a") as f:
+                f.write(f"{series_path}\n")
+            
+            # Jump to next sample (recursively)
+            next_idx = (index + 1) % len(self.samples)
+            return self.__getitem__(next_idx)
 
 
 # ---------------------------------------------------------------------------
