@@ -257,7 +257,9 @@ def main() -> None:
                 history = json.load(f)
             if history["val_psnr"]:
                 best_psnr = max(history["val_psnr"])
-        print(f"  ✓ Resumed Epoch: {start_epoch} | Best PSNR: {best_psnr:.2f} dB | Strike: {no_improve_count}", flush=True)
+        
+        batch_msg = f"Batch: {start_batch}" if start_batch > 0 else "Start of Epoch"
+        print(f"  ✓ Resumed Epoch: {start_epoch} | {batch_msg} | Best PSNR: {best_psnr:.2f} dB", flush=True)
 
     total_epochs = cfg["train"]["epochs"]
 
