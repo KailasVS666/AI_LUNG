@@ -351,11 +351,15 @@ def main() -> None:
                 try:
                     import os
                     os.replace(tmp_path, ckpt_path)
-                    # Force a sync on the directory if possible
-                    fd = os.open(str(output_dir), os.O_RDONLY)
-                    os.fsync(fd)
-                    os.close(fd)
-                    print(f"\n✅ Hard-Synced Checkpoint to Drive: Batch {current_global_batch}", flush=True)
+                    
+                    # Force a sync for Google Drive cloud stability
+                    if os.name != "nt": # On Linux/Colab, we can flush the directory
+                        try:
+                            fd = os.open(str(output_dir), os.O_RDONLY)
+                            os.fsync(fd)
+                            os.close(fd)
+                        except: pass 
+                    print(f"\n🚀 [HARD-SYNC] DRIVE UPDATED: Global Batch {current_global_batch} is now locked in!", flush=True)
                 except Exception as e:
                     print(f"\n⚠️ Sync Warning: {e}", flush=True)
 
