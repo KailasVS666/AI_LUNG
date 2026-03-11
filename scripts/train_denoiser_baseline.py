@@ -294,13 +294,24 @@ def main() -> None:
                     pred = model(x)
                     loss, _ = criterion(pred, y)
                 scaler.scale(loss).backward()
+                # Gradient Clipping for Stability (Peak Performance)
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 scaler.step(optimizer)
                 scaler.update()
             else:
                 pred = model(x)
                 loss, _ = criterion(pred, y)
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
+
+            # --- NaN Detection & Protection ---
+            if torch.isnan(loss) or torch.isinf(loss):
+                print(f"⚠️ NaN detected at batch {batch_idx}! Reducing LR and skipping.", flush=True)
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] *= 0.5 # Halve LR
+                continue
 
             train_loss_sum += float(loss.item())
             train_steps    += 1

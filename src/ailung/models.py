@@ -160,7 +160,7 @@ class Denoise25DUNet(nn.Module):
         d2 = self.dec2(d3, s2)
         d1 = self.dec1(d2, s1)
         out = self.out_conv(self.final_up(d1))
-        return out
+        return torch.sigmoid(out) # Ensure output is [0, 1] for stability
 
 
 # ---------------------------------------------------------------------------
@@ -196,14 +196,16 @@ def _ssim2d(
     mu2_sq = mu2 * mu2
     mu1_mu2 = mu1 * mu2
 
-    sigma1_sq = conv(pred * pred) - mu1_sq
-    sigma2_sq = conv(target * target) - mu2_sq
+    sigma1_sq = torch.clamp(conv(pred * pred) - mu1_sq, min=1e-8)
+    sigma2_sq = torch.clamp(conv(target * target) - mu2_sq, min=1e-8)
     sigma12   = conv(pred * target) - mu1_mu2
 
     numerator   = (2 * mu1_mu2 + C1) * (2 * sigma12 + C2)
-    denominator = (mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2)
+    # Added epsilon to denominator for final safety check
+    denominator = (mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2) + 1e-8
 
-    return (numerator / denominator).mean()
+    score = numerator / denominator
+    return score.mean()
 
 
 class DenoiseLoss(nn.Module):

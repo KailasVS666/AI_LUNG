@@ -36,7 +36,7 @@ train:
   batch_size: 16  # Reduced from 32 to prevent T4 OOM with B5
   num_workers: 2  # Balance between speed and Colab IO stability
   epochs: 30
-  learning_rate: 0.0003
+  learning_rate: 0.0001 # Reduced for stability in full-physics mode
   weight_decay: 0.00001
   output_dir: /content/drive/MyDrive/AI_LUNG_DATA/outputs/denoiser_25d
   early_stop_patience: 7      # Stop if val PSNR doesn't improve for 7 epochs
