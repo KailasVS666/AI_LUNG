@@ -16,7 +16,12 @@ from __future__ import annotations
 import argparse
 import os
 import random
+import sys
 from pathlib import Path
+
+# Add src to sys.path to ensure 'ailung' module is found
+repo_root = Path(__file__).resolve().parent.parent
+sys.path.append(str(repo_root / "src"))
 import json
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)   # suppress Radon warning
