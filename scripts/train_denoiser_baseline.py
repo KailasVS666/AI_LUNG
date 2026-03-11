@@ -322,6 +322,9 @@ def main() -> None:
             # --- RESILIENCE: Mid-epoch checkpoint (every 500 batches) ---
             if (batch_idx + 1) % 500 == 0:
                 current_global_batch = batch_idx + (start_batch + 1 if start_batch >= 0 else 0)
+                ckpt_path = output_dir / "denoiser_last.pt"
+                tmp_path  = output_dir / "denoiser_last.tmp"
+                
                 torch.save(
                     {
                         "epoch": epoch, 
@@ -331,8 +334,20 @@ def main() -> None:
                         "no_improve_count": no_improve_count,
                         "config": cfg,
                     },
-                    output_dir / "denoiser_last.pt",
+                    tmp_path,
                 )
+                
+                # Hard rename and sync for Google Drive stability
+                try:
+                    import os
+                    os.replace(tmp_path, ckpt_path)
+                    # Force a sync on the directory if possible
+                    fd = os.open(str(output_dir), os.O_RDONLY)
+                    os.fsync(fd)
+                    os.close(fd)
+                    print(f"\n✅ Hard-Synced Checkpoint to Drive: Batch {current_global_batch}", flush=True)
+                except Exception as e:
+                    print(f"\n⚠️ Sync Warning: {e}", flush=True)
 
         train_loss = train_loss_sum / max(train_steps, 1)
         # Clear start_batch after first resumed epoch finishes
