@@ -116,6 +116,7 @@ class LIDCDenoise25DDataset(Dataset):
         self._cache = _LRUCache(maxsize=cache_size)
         self._series_idx: dict[str, int] = {}  # O(1) lookup
         self._shape_cache: dict[str, tuple[int, int, int]] = {} # metadata cache
+        self._bad_series: set[str] = set()    # Blacklist per-session
         # .npy fast-path: series_path -> npy file path
         self._npy_map: dict[str, str] = npy_mapping or {}
         if self._npy_map:
@@ -238,51 +239,70 @@ class LIDCDenoise25DDataset(Dataset):
         return len(self.samples)
 
     def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
-        try:
-            series_path, z  = self.samples[index]
-            series_idx      = self._series_idx.get(series_path, 0)
+        attempts = 0
+        max_attempts = min(len(self.samples), 1000)
+        
+        while attempts < max_attempts:
+            try:
+                series_path, z = self.samples[index]
+                
+                # Check blacklist first
+                if series_path in self._bad_series:
+                    raise ValueError(f"Series already blacklisted: {series_path}")
 
-            # Load (or fetch from cache) the CLEAN normal-dose volume
-            vol_nd = self._load_nd_volume(series_path)
+                series_idx = self._series_idx.get(series_path, 0)
 
-            start = z - self.context_slices
-            end   = z + self.context_slices + 1
-            nd_window = vol_nd[start:end]    # (9, H, W) — normal-dose window
-            nd_slice  = vol_nd[z]             # (H, W)   — central target slice
+                # Load (or fetch from cache)
+                vol_nd = self._load_nd_volume(series_path)
 
-            # Simulate low-dose on ONLY the 9 needed slices — microseconds
-            if self.fast_mode:
-                rng      = np.random.default_rng(self.seed + series_idx * 1000 + z)
-                noise    = rng.normal(0.0, self.fast_mode_noise_std,
-                                      nd_window.shape).astype(np.float32)
-                ld_stack = np.clip(nd_window + noise, 0.0, 1.0)
-            else:
-                # Fast pixel-space Beer-Lambert + Poisson (replaces Radon for online training)
-                ld_stack = simulate_low_dose_fast(
-                    nd_window,
-                    i0=self.low_dose_i0,
-                    seed=self.seed + series_idx * 1000 + z,
-                )
+                start = z - self.context_slices
+                end   = z + self.context_slices + 1
+                nd_window = vol_nd[start:end]
+                nd_slice  = vol_nd[z]
 
-            return {
-                "ld": torch.from_numpy(ld_stack.astype(np.float32)),
-                "nd": torch.from_numpy(nd_slice.astype(np.float32)).unsqueeze(0),
-                "x":  torch.from_numpy(ld_stack.astype(np.float32)),
-                "y":  torch.from_numpy(nd_slice.astype(np.float32)).unsqueeze(0),
-            }
-        except (ValueError, RuntimeError, IndexError) as e:
-            # --- SELF-HEALING: Log the corruption and skip to NEXT sample ---
-            series_path, _ = self.samples[index]
-            print(f"\n⚠️ CORRUPTED DATA DETECTED: {series_path}")
-            print(f"   Reason: {str(e)}")
-            
-            # Log to a file so user can clean up the dataset later
-            with open("corrupted_files.txt", "a") as f:
-                f.write(f"{series_path}\n")
-            
-            # Jump to next sample (recursively)
-            next_idx = (index + 1) % len(self.samples)
-            return self.__getitem__(next_idx)
+                if self.fast_mode:
+                    rng      = np.random.default_rng(self.seed + series_idx * 1000 + z)
+                    noise    = rng.normal(0.0, self.fast_mode_noise_std, 
+                                          nd_window.shape).astype(np.float32)
+                    ld_stack = np.clip(nd_window + noise, 0.0, 1.0)
+                else:
+                    ld_stack = simulate_low_dose_fast(
+                        nd_window,
+                        i0=self.low_dose_i0,
+                        seed=self.seed + series_idx * 1000 + z,
+                    )
+
+                return {
+                    "ld": torch.from_numpy(ld_stack.astype(np.float32)),
+                    "nd": torch.from_numpy(nd_slice.astype(np.float32)).unsqueeze(0),
+                    "x":  torch.from_numpy(ld_stack.astype(np.float32)),
+                    "y":  torch.from_numpy(nd_slice.astype(np.float32)).unsqueeze(0),
+                }
+
+            except (ValueError, RuntimeError, IndexError, OSError) as e:
+                series_path, _ = self.samples[index]
+                
+                # Only log the FIRST time we hit this bad series
+                if series_path not in self._bad_series:
+                    self._bad_series.add(series_path)
+                    print(f"\n🛡️  AUTOPILOT SHIELD: Blacklisting corrupted series: {series_path}")
+                    print(f"   Reason: {str(e)}")
+                    
+                    with open("corrupted_files.txt", "a") as f:
+                        f.write(f"{series_path}\n")
+                
+                # Move to next sample and try again
+                index = (index + 1) % len(self.samples)
+                attempts += 1
+
+        # If we failed to find any good sample in 1000 tries, return zeroed data to avoid crash
+        print(f"\n🛑 CRITICAL: Failed to find valid sample after {max_attempts} skips. Returning placeholder.")
+        return {
+            "ld": torch.zeros((self.context_slices*2+1, 512, 512)),
+            "nd": torch.zeros((1, 512, 512)),
+            "x":  torch.zeros((self.context_slices*2+1, 512, 512)),
+            "y":  torch.zeros((1, 512, 512)),
+        }
 
 
 # ---------------------------------------------------------------------------
