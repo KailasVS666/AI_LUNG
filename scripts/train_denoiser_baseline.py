@@ -369,8 +369,11 @@ def main() -> None:
                     print(f"\n⚠️ Sync Warning: {e}", flush=True)
 
         train_loss = train_loss_sum / max(train_steps, 1)
-        # Clear start_batch after first resumed epoch finishes
+        
+        # Clear start_batch and reset sampler offset after first resumed epoch finishes
         start_batch = -1
+        if hasattr(train_loader.sampler, 'start_offset'):
+            train_loader.sampler.start_offset = 0
 
         # ----------------------------------------------------------------
         # VALIDATE
