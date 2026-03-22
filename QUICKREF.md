@@ -91,23 +91,28 @@ outputs/
 
 ## Model Architectures
 
-### Denoise25DUNetSmall
-- **Input**: (B, 3, H, W) - three slices (z-1, z, z+1)
-- **Architecture**: 2-level encoder-decoder with skip connections
-- **Parameters**: ~150K
-- **Output**: (B, 1, H, W) - denoised center slice
+### Stage 1 — `Denoise25DUNet`
+- **Input**: `(B, 9, H, W)` — 9 consecutive LDCT slices (4 context above + target + 4 context below)
+- **Encoder**: EfficientNet-B5-style depthwise-separable convolutions → 48→24→40→80→192→320 channels
+- **Attention**: CBAM2D at every skip connection and bottleneck
+- **Loss**: L1 + (1 − SSIM) + Gradient
+- **Output**: `(B, 1, H, W)` — denoised central slice (sigmoid activated)
 
-### Recon3DAttentionUNetSmall
-- **Input**: (B, 1, D, H, W) - 3D noisy patch
-- **Architecture**: 3D U-Net with channel attention gates
-- **Parameters**: ~2.5M
-- **Output**: (B, 1, D, H, W) - clean reconstruction
+### Stage 2 — `Recon3DUNet`
+- **Input**: `(B, 1, 64, 64, 64)` — 3D patch from stacked denoised slices
+- **Architecture**: 4-level 3D U-Net with InstanceNorm3d + LeakyReLU, CBAM3D at each encoder stage
+- **Channels**: 16 → 32 → 64 → 128 (base_channels=16)
+- **Loss**: L1 + SSIM3D + Gradient3D + Projection Consistency + Range Penalty
+- **Output**: `(B, 1, 64, 64, 64)` — refined 3D lung volume (clamped to [0, 1])
 
-### NoduleClassifier3D
-- **Input**: (B, 1, 32, 64, 64) - 3D patch around potential nodule
-- **Architecture**: 4× strided conv → global pool → classifier
-- **Parameters**: ~291K
-- **Output**: (B, 2) - [background, nodule] logits
+### Stage 3 — `NoduleDetector3D`
+- **Input**: `(B, 1, 32, 64, 64)` — 3D patch from reconstructed volume
+- **Architecture**: 4× Conv3D blocks (32→64→128→256) + CBAM3D + GlobalAvgPool + 2-layer FC classifier
+- **Dropout**: 0.4 → 0.2
+- **Loss**: Soft Dice + Cross-Entropy
+- **Output**: `(B, 2)` — logits for [benign, malignant]
+
+> **Note**: `NoduleClassifier3D`, `Recon3DAttentionUNetSmall`, `Denoise25DUNetSmall` are legacy aliases pointing to the above classes.
 
 ## Common Config Tweaks
 
@@ -166,12 +171,13 @@ git log --oneline -5
 ## Dataset Info
 
 ### LIDC-IDRI Statistics
-- **Patients**: 1,011
-- **CT Series**: 1,019
-- **DICOM Slices**: 244,527
-- **XML Files**: 1,180 (with series UIDs embedded)
+- **Patients**: 1,018
+- **CT Series**: 1,018
+- **DICOM Slices**: ~244,000+
+- **XML Files**: 1,018 (series UIDs embedded in `<SeriesInstanceUid>` tag)
 - **Nodules**: ~2,600 annotated by 4 radiologists
 - **Malignancy Range**: 1 (benign) to 5 (highly suspicious)
+- **Split**: 713 train / 153 val / 153 test (patient-wise, no leakage)
 
 ### Preprocessing Pipeline
 ```
@@ -239,4 +245,5 @@ print(f"Train: {len(splits['train'])}, Val: {len(splits['val'])}, Test: {len(spl
 ---
 
 **See [README.md](README.md) for full project overview**  
-**See [TRAINING_GUIDE.md](TRAINING_GUIDE.md) for detailed training instructions**
+**See [TRAINING_GUIDE.md](TRAINING_GUIDE.md) for detailed training instructions**  
+**See [DOCUMENTATION.md](DOCUMENTATION.md) for full academic documentation (Abstract → References)**
