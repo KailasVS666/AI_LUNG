@@ -376,21 +376,42 @@ def main() -> None:
             train_loader.sampler.start_offset = 0
 
         # ----------------------------------------------------------------
-        # VALIDATE
+        # VALIDATE  (with mid-validation checkpointing)
         # ----------------------------------------------------------------
         model.eval()
+        val_resume_path = output_dir / f"val_resume_epoch{epoch}.json"
         val_loss_sum    = 0.0
         val_steps       = 0
         val_psnr_sum    = 0.0
         val_ssim_sum    = 0.0
         val_image_count = 0
+        val_start_idx   = 0
         preview_saved   = False
 
+        # --- Resume mid-validation if checkpoint exists ---
+        if val_resume_path.exists():
+            with open(val_resume_path, "r") as f:
+                val_ckpt = json.load(f)
+            if val_ckpt.get("epoch") == epoch:
+                val_start_idx   = val_ckpt["val_step"]
+                val_loss_sum    = val_ckpt["val_loss_sum"]
+                val_steps       = val_ckpt["val_steps"]
+                val_psnr_sum    = val_ckpt["val_psnr_sum"]
+                val_ssim_sum    = val_ckpt["val_ssim_sum"]
+                val_image_count = val_ckpt["val_image_count"]
+                preview_saved   = True  # Don't overwrite existing preview
+                print(f"\n🛡️  VAL RESUME: Continuing from val batch {val_start_idx} / {len(val_loader)}", flush=True)
+
         val_bar = tqdm(val_loader, desc="  Val  ", unit="batch",
-                       dynamic_ncols=True, leave=True)
+                       dynamic_ncols=True, leave=True,
+                       initial=val_start_idx, total=len(val_loader))
 
         with torch.no_grad():
-            for batch in val_bar:
+            for val_batch_idx, batch in enumerate(val_loader):
+                # Skip already-processed val batches on resume
+                if val_batch_idx < val_start_idx:
+                    continue
+
                 x = batch["x"].to(device)
                 y = batch["y"].to(device)
                 pred = model(x)
@@ -408,6 +429,7 @@ def main() -> None:
                     val_ssim_sum    += ssim
                     val_image_count += 1
 
+                val_bar.update(1)
                 val_bar.set_postfix(
                     loss=f"{val_loss_sum/val_steps:.4f}",
                     psnr=f"{val_psnr_sum/max(val_image_count,1):.2f}",
@@ -416,6 +438,23 @@ def main() -> None:
                 if not preview_saved and y_np.shape[0] > 0:
                     _save_preview(epoch, output_dir, x_np[0], y_np[0], pred_np[0])
                     preview_saved = True
+
+                # --- Save val checkpoint every 200 batches ---
+                if val_steps % 200 == 0:
+                    with open(val_resume_path, "w") as f:
+                        json.dump({
+                            "epoch": epoch,
+                            "val_step": val_batch_idx + 1,
+                            "val_loss_sum": val_loss_sum,
+                            "val_steps": val_steps,
+                            "val_psnr_sum": val_psnr_sum,
+                            "val_ssim_sum": val_ssim_sum,
+                            "val_image_count": val_image_count,
+                        }, f)
+
+        # Clean up val resume file after successful completion
+        if val_resume_path.exists():
+            val_resume_path.unlink()
 
         val_loss = val_loss_sum  / max(val_steps, 1)
         val_psnr = val_psnr_sum  / max(val_image_count, 1)
