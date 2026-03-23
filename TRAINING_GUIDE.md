@@ -139,22 +139,38 @@ print(f"GPU name: {torch.cuda.get_device_name(0) if torch.cuda.is_available() el
 
 ### Monitor Long Training
 
-For multi-hour training, add checkpointing:
+For multi-hour training, outputs are auto-saved every **200 batches** to Drive:
 
 ```python
-# Already implemented in scripts! Just watch outputs:
-!ls -lh outputs/train_runs/*/
+# Check latest checkpoint timestamp
+!ls -lh /content/drive/MyDrive/AI_LUNG_DATA/outputs/denoiser_25d/
 ```
 
-To resume interrupted training, load checkpoint manually:
+If validation disconnects mid-way, a `val_resume_epoch{N}.json` file is automatically created on Drive. The next run will detect it and **resume validation from where it stopped** — no need to restart from 0%.
 
-```python
-# In training script, add before training loop:
-checkpoint_path = Path(output_dir) / "recon3d_last.pt"
-if checkpoint_path.exists():
-    model.load_state_dict(torch.load(checkpoint_path))
-    print(f"Resumed from {checkpoint_path}")
+### Keep Colab Session Alive (For Overnight Runs)
+
+**Browser Console (F12 → Console tab):**
+```javascript
+function KeepColabAlive() {
+  console.log("Heartbeat: " + new Date().toLocaleTimeString());
+  const btn = document.querySelector("colab-connect-button");
+  if (btn) { btn.click(); }
+}
+setInterval(KeepColabAlive, 60000);
 ```
+
+**Windows PowerShell (prevent laptop sleep):**
+```powershell
+$shell = New-Object -ComObject WScript.Shell
+while($true) {
+  $shell.SendKeys('{SCROLLLOCK}')
+  Write-Host "Keeping Windows Awake... $(Get-Date)"
+  Start-Sleep -Seconds 60
+}
+```
+
+> ⚠️ **Rules:** Keep laptop plugged in, lid open, and Colab tab visible (not hidden behind other tabs).
 
 ## Training Schedule
 
@@ -223,9 +239,14 @@ Current splits are **patient-wise** (prevents data leakage):
 
 ### 2. Validation Metrics
 
-**Denoising**:
-- PSNR ≥ 28 dB (good), ≥ 32 dB (excellent)
-- SSIM ≥ 0.85 (good), ≥ 0.92 (excellent)
+**Denoising (Stage 1) — Actual Results:**
+
+| Epoch | PSNR | SSIM | Status |
+|-------|------|------|--------|
+| 1 | 33.18 dB | 0.9470 | ✅ `denoiser_best.pt` saved |
+| 2 | ~34.80 dB | TBD | ⏳ In Progress |
+
+Targets: PSNR ≥ 28 dB (good), ≥ 32 dB (excellent); SSIM ≥ 0.85 (good), ≥ 0.92 (excellent)
 
 **Reconstruction**:
 - PSNR improvement ≥ 2 dB

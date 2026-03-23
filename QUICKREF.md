@@ -66,27 +66,20 @@ python scripts/train_nodule_detector.py --config configs/nodule_detection.yaml
 
 ### Output Artifacts
 ```
-outputs/
+outputs/  (on Google Drive: AI_LUNG_DATA/outputs/)
 ├── splits/
 │   └── patient_split.json              # 713 train / 153 val / 153 test
 │
-└── train_runs/
-    ├── baseline_denoiser/
-    │   ├── denoiser_last.pt            # Final checkpoint
-    │   ├── history.json                # Metrics per epoch
-    │   └── epoch_*.png                 # Visual previews
-    │
-    ├── recon3d/
-    │   ├── recon3d_last.pt
-    │   ├── recon3d_best.pt             # Best PSNR checkpoint
-    │   ├── history.json
-    │   └── epoch_*_preview.png
-    │
-    └── nodule_detection/
-        ├── nodule_detector_last.pt
-        ├── nodule_detector_best.pt     # Best AUC checkpoint
-        ├── history.json
-        └── training_curves.png
+└── denoiser_25d/                       # Stage 1 outputs (Colab path)
+    ├── denoiser_last.pt                # Latest checkpoint (saved every 200 batches)
+    ├── denoiser_best.pt                # Best PSNR checkpoint
+    ├── denoiser_last.tmp               # Atomic write buffer (auto-deleted)
+    ├── val_resume_epoch{N}.json        # Mid-validation checkpoint (auto-deleted on completion)
+    ├── corrupted_files.txt             # Log of blacklisted DICOM series
+    ├── history.json                    # Metrics per epoch
+    ├── training_curves.png             # Loss/PSNR/SSIM plots
+    └── previews/
+        └── epoch_001.png               # Side-by-side: Low-Dose | Target | AI Output
 ```
 
 ## Model Architectures
@@ -123,12 +116,20 @@ max_cases_val: 3       # Default: 5
 epochs: 1              # Default: 2-3
 ```
 
-### For Production
+### For Production (Colab Full-Scale)
 ```yaml
-max_cases_train: null  # Use all 713 series
-max_cases_val: null    # Use all 153 series
-epochs: 30             # Default: 2-3
-batch_size: 8          # If GPU available (default: 4)
+max_cases_per_split:
+  train: null  # Use all 713 series
+  val: null    # Use all 153 series
+epochs: 30
+batch_size: 16  # T4 GPU default
+```
+
+### Actual Colab Run Command
+```python
+%cd /content/AI_LUNG
+!git pull origin main
+!python scripts/train_denoiser_baseline.py --config configs/baseline_colab.yaml
 ```
 
 ### For Memory Issues

@@ -1,6 +1,6 @@
 # AI_LUNG: AI-Powered 3D Lung Imaging for Early Cancer Detection
 
-**Project Documentation — March 2026**
+**Project Documentation — March 2026 (Updated: 23 Mar 2026)**
 **Repository**: https://github.com/KailasVS666/AI_LUNG
 
 ---
@@ -48,7 +48,7 @@ High-dose CT scanners cost approximately USD 1–3 million, and scanning costs U
 Real paired LDCT/HDCT data from the same patient is extremely rare and ethically difficult to obtain (you cannot expose a patient to double radiation). This project adopts a **physics-first simulation** approach — generating synthetic LDCT images from normal-dose LIDC-IDRI scans using the physical photon-counting Poisson model. This produces noise patterns (streak artifacts, correlated noise) that more faithfully replicate real LDCT scanners than simple additive Gaussian noise.
 
 ### 3. The Colab Fragility Problem
-Training medical imaging models requires weeks of GPU time. Free GPU providers (Google Colab) impose runtime limits of ~12 hours, causing training interruptions. Without mid-epoch checkpointing, all progress is lost. AI_LUNG implements **deterministic mid-epoch resume** — the model saves its full training state every 500 batches and resumes from the exact batch on reconnect.
+Training medical imaging models requires weeks of GPU time. Free GPU providers (Google Colab) impose runtime limits of ~12 hours, causing training interruptions. Without mid-epoch checkpointing, all progress is lost. AI_LUNG implements **deterministic mid-epoch resume** — the model saves its full training state every 200 batches and resumes from the exact batch on reconnect. A **validation checkpoint** (`val_resume_epoch{N}.json`) is also saved every 200 validation batches, allowing the 2-hour validation phase to resume mid-way without restarting from zero.
 
 ### 4. The I/O Bottleneck in Cloud Training
 The LIDC-IDRI dataset is ~72 GB of DICOM files stored on Google Drive. Reading from Drive during training is extremely slow (~100 MB/s vs ~1 GB/s for local NVMe). AI_LUNG implements a **"Best-Effort" NVMe Sync** module that copies data from Drive to the local VM disk (respecting an 80% disk safety threshold) before training begins.
@@ -271,11 +271,30 @@ A full sequential end-to-end training notebook covering:
 
 #### Mid-Epoch Checkpointing & Deterministic Resume
 
-Since Stage 1 training on 166,000+ slices takes ~12–15 hours per epoch (longer than Colab session limits), a mid-epoch checkpointing system was implemented:
+Since Stage 1 training on 166,000+ slices takes ~12–15 hours per epoch (longer than Colab session limits), a two-layer checkpointing system was implemented:
 
-- **Save frequency**: Every 500 batches (~1 hour of training time)
-- **Saved state**: Model weights, optimizer state, learning rate scheduler state, current epoch, current batch index, RNG state
-- **Resume behaviour**: On reconnect, the system identifies the last saved checkpoint, restores all state, and resumes training from the exact batch — no progress is lost
+**Training Checkpoints:**
+- **Save frequency**: Every 200 batches (~10 minutes of training time)
+- **Saved state**: Model weights, optimizer state, epoch index, global batch index, `no_improve_count`
+- **Resume behaviour**: On reconnect, restores all state and resumes from exact batch — no progress is lost
+- **Atomic writes**: Checkpoint is written to a `.tmp` file first, then `os.replace()` atomically swaps it, preventing corruption if the VM dies mid-write
+
+**Validation Checkpoints:**
+- **Save frequency**: Every 200 validation batches
+- **Saved state**: Running `val_loss_sum`, `val_psnr_sum`, `val_ssim_sum`, `val_steps`, `val_image_count`, and current batch index
+- **File**: `val_resume_epoch{N}.json` (auto-deleted on successful completion)
+- **Resume behaviour**: On reconnect, validation skips already-processed batches and continues accumulating from the saved sums
+
+#### Corrupted DICOM Self-Healing (Series Blacklist)
+
+The LIDC-IDRI dataset contains a small number of corrupted DICOM series (e.g., truncated pixel data). Earlier implementations used recursive skip logic that caused Python recursion errors and terminal flooding when entire series (100+ slices) were corrupted.
+
+The current implementation uses an **iterative blacklist approach**:
+- `__getitem__` uses a `while` loop (up to 1,000 iterations) instead of recursion
+- A `_bad_series: set[str]` is maintained per dataset instance
+- On first failure of a series, it is logged to `corrupted_files.txt` and added to the blacklist
+- Subsequent calls for any slice of that series are skipped instantly (O(1) set lookup, no re-loading)
+- Eliminates terminal flooding — one warning per bad series, not one per slice
 
 #### NVMe Synchronization ("Best-Effort Sync")
 
@@ -301,17 +320,30 @@ Instead of traversing the directory tree at startup to find `.npy` files (which 
 
 ## Result Analysis
 
-Full-scale training on all 1,018 LIDC-IDRI patients is currently in progress. The following targets and expected results are based on architecture design and preliminary smoke-testing:
+### Actual Training Results (Full-Scale: 713 train / 153 val patients)
 
-| Stage | Metric | Expected (Good) | Expected (Excellent) |
-|-------|--------|-----------------|----------------------|
-| Stage 1 — Denoising | PSNR | ≥ 28 dB | ≥ 32 dB |
-| Stage 1 — Denoising | SSIM | ≥ 0.85 | ≥ 0.92 |
-| Stage 2 — Reconstruction | PSNR improvement | ≥ 2 dB over Stage 1 | — |
-| Stage 2 — Reconstruction | SSIM improvement | ≥ 0.10 over Stage 1 | — |
-| Stage 3 — Detection | ROC AUC | ≥ 0.90 | ≥ 0.95 |
-| Stage 3 — Detection | Sensitivity | ≥ 0.85 at Spec. 0.90 | — |
-| Stage 3 — Detection | FP per scan | < 4 | < 2 |
+| Epoch | Train Loss | Val Loss | Val PSNR | Val SSIM | Notes |
+|-------|-----------|----------|----------|----------|-------|
+| 1 | 0.2144 | 0.2071 | **33.18 dB** | **0.9470** | First full epoch. Saved as `denoiser_best.pt`. |
+| 2 | 0.2110 | ~0.2059 | **~34.80 dB** | TBD | Validation in progress at time of writing. |
+
+**Interpretation:**  
+- PSNR of **33.18 dB** after Epoch 1 already surpasses the "Excellent" target threshold of ≥ 32 dB. ✅  
+- SSIM of **0.9470** surpasses the "Excellent" threshold of ≥ 0.92. ✅  
+- Epoch 2 is producing PSNR ~34.80 dB (mid-validation), indicating continued improvement. 📈
+- Visual inspection of `previews/epoch_001.png` confirms sharp organ edges (kidneys, spine, airways), clean black background, and no over-smoothing artifacts.
+
+### Target Benchmarks
+
+| Stage | Metric | Expected (Good) | Expected (Excellent) | Achieved (Ep.1) |
+|-------|--------|-----------------|----------------------|-----------------|
+| Stage 1 — Denoising | PSNR | ≥ 28 dB | ≥ 32 dB | **33.18 dB ✅** |
+| Stage 1 — Denoising | SSIM | ≥ 0.85 | ≥ 0.92 | **0.9470 ✅** |
+| Stage 2 — Reconstruction | PSNR improvement | ≥ 2 dB over Stage 1 | — | Pending |
+| Stage 2 — Reconstruction | SSIM improvement | ≥ 0.10 over Stage 1 | — | Pending |
+| Stage 3 — Detection | ROC AUC | ≥ 0.90 | ≥ 0.95 | Pending |
+| Stage 3 — Detection | Sensitivity | ≥ 0.85 at Spec. 0.90 | — | Pending |
+| Stage 3 — Detection | FP per scan | < 4 | < 2 | Pending |
 
 ### Completed Milestones
 
@@ -330,9 +362,13 @@ Full-scale training on all 1,018 LIDC-IDRI patients is currently in progress. Th
 | Stage 3: 3D CNN + CBAM nodule detector/classifier | ✅ Done |
 | Stage 3 Hybrid Loss (Dice + Cross-Entropy) | ✅ Done |
 | Full Colab notebook (sequential end-to-end pipeline) | ✅ Done |
-| Mid-epoch checkpointing and deterministic resume | ✅ Done |
+| Mid-epoch training checkpointing (every 200 batches) | ✅ Done |
+| Mid-validation checkpointing (every 200 val batches) | ✅ Done |
+| Corrupted DICOM iterative blacklist (self-healing) | ✅ Done |
 | NVMe sync + Grouped Sampler + O(1) header mapping | ✅ Done |
-| Full-scale Colab training (all 1,018 patients) | ⏳ In Progress |
+| Sampler offset reset fix (full epoch training post-resume) | ✅ Done |
+| Stage 1 Full-Scale Training: Epoch 1 — PSNR 33.18 dB, SSIM 0.9470 | ✅ Done |
+| Stage 1 Full-Scale Training: Epoch 2+ | ⏳ In Progress |
 | Ablation studies | ⏳ Pending |
 | Final evaluation on test set | ⏳ Pending |
 
@@ -380,5 +416,5 @@ The system is fully ready for large-scale training and evaluation. Upon completi
 
 ---
 
-*Last Updated: March 2026*  
-*Status: Full architecture implemented — full-scale training in progress*
+*Last Updated: 23 March 2026*  
+*Status: Stage 1 Epoch 1 complete (PSNR 33.18 dB / SSIM 0.9470). Stage 1 Epoch 2+ in progress.*
