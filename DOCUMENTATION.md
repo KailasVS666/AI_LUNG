@@ -284,6 +284,7 @@ Since Stage 1 training on 166,000+ slices takes ~12–15 hours per epoch (longer
 - **Saved state**: Running `val_loss_sum`, `val_psnr_sum`, `val_ssim_sum`, `val_steps`, `val_image_count`, and current batch index
 - **File**: `val_resume_epoch{N}.json` (auto-deleted on successful completion)
 - **Resume behaviour**: On reconnect, validation skips already-processed batches and continues accumulating from the saved sums
+- **⚡ Fast Resume**: Uses `torch.utils.data.Subset` to instantly position the DataLoader at the correct sample index — no wasted I/O loading and discarding already-processed batches (previous skip-loop approach caused ~50 min stalls for large resume offsets)
 
 #### Corrupted DICOM Self-Healing (Series Blacklist)
 
@@ -364,6 +365,7 @@ Instead of traversing the directory tree at startup to find `.npy` files (which 
 | Full Colab notebook (sequential end-to-end pipeline) | ✅ Done |
 | Mid-epoch training checkpointing (every 200 batches) | ✅ Done |
 | Mid-validation checkpointing (every 200 val batches) | ✅ Done |
+| Val resume Subset fix (instant jump, no I/O stall) | ✅ Done |
 | Corrupted DICOM iterative blacklist (self-healing) | ✅ Done |
 | NVMe sync + Grouped Sampler + O(1) header mapping | ✅ Done |
 | Sampler offset reset fix (full epoch training post-resume) | ✅ Done |
@@ -416,5 +418,5 @@ The system is fully ready for large-scale training and evaluation. Upon completi
 
 ---
 
-*Last Updated: 23 March 2026*  
-*Status: Stage 1 Epoch 1 complete (PSNR 33.18 dB / SSIM 0.9470). Stage 1 Epoch 2+ in progress.*
+*Last Updated: 24 March 2026*  
+*Status: Stage 1 training in progress. Epoch 1 complete (PSNR 33.18 dB / SSIM 0.9470). Epoch 2 validation in progress (~34.8 dB mid-val). All resilience systems operational.*
