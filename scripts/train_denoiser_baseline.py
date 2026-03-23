@@ -399,18 +399,36 @@ def main() -> None:
                 val_psnr_sum    = val_ckpt["val_psnr_sum"]
                 val_ssim_sum    = val_ckpt["val_ssim_sum"]
                 val_image_count = val_ckpt["val_image_count"]
-                preview_saved   = True  # Don't overwrite existing preview
-                print(f"\n🛡️  VAL RESUME: Continuing from val batch {val_start_idx} / {len(val_loader)}", flush=True)
+                preview_saved   = True
+                print(f"\n🛡️  VAL RESUME: Instantly jumping to batch {val_start_idx} / {len(val_loader)}", flush=True)
 
-        val_bar = tqdm(val_loader, desc="  Val  ", unit="batch",
+        # --- Build the active val loader (instant jump, no wasted I/O) ---
+        # Instead of iterating and skipping (slow!), we create a Subset that
+        # starts at the correct sample index, so the DataLoader never loads
+        # the already-processed batches at all.
+        batch_size = cfg["train"]["batch_size"]
+        skip_samples = val_start_idx * batch_size
+        if skip_samples > 0 and skip_samples < len(val_ds):
+            remaining_indices = list(range(skip_samples, len(val_ds)))
+            active_val_ds = torch.utils.data.Subset(val_ds, remaining_indices)
+        else:
+            active_val_ds = val_ds
+
+        active_val_loader = torch.utils.data.DataLoader(
+            active_val_ds,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=cfg["train"]["num_workers"],
+            pin_memory=torch.cuda.is_available(),
+        )
+
+        val_bar = tqdm(active_val_loader, desc="  Val  ", unit="batch",
                        dynamic_ncols=True, leave=True,
                        initial=val_start_idx, total=len(val_loader))
 
         with torch.no_grad():
-            for val_batch_idx, batch in enumerate(val_loader):
-                # Skip already-processed val batches on resume
-                if val_batch_idx < val_start_idx:
-                    continue
+            for val_batch_idx, batch in enumerate(active_val_loader):
+                abs_batch_idx = val_batch_idx + val_start_idx  # Global val batch index
 
                 x = batch["x"].to(device)
                 y = batch["y"].to(device)
@@ -444,7 +462,7 @@ def main() -> None:
                     with open(val_resume_path, "w") as f:
                         json.dump({
                             "epoch": epoch,
-                            "val_step": val_batch_idx + 1,
+                            "val_step": abs_batch_idx + 1,
                             "val_loss_sum": val_loss_sum,
                             "val_steps": val_steps,
                             "val_psnr_sum": val_psnr_sum,
