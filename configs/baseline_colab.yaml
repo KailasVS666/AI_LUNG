@@ -15,7 +15,7 @@ data:
     val: null             # Use all 153 val series
     test: null
   max_samples_per_series: null # Peak Performance: Use all slices
-  fast_mode: False  # Peak Performance: Use full Radon/Poisson physics
+  fast_mode: True  # Fast Mode: Use fast pixel-space simulation to export rapidly on CPU
   fast_mode_noise_std: 0.05
 
   # Path where export_denoised.py saves the denoised .npy volumes

@@ -25,7 +25,13 @@ import torch
 import yaml
 
 from ailung.models import Denoise25DUNet
-from ailung.preprocess import build_volume, hu_clip_normalize, apply_clahe, simulate_low_dose_volume
+from ailung.preprocess import (
+    build_volume,
+    hu_clip_normalize,
+    apply_clahe,
+    simulate_low_dose_volume,
+    simulate_low_dose_fast,
+)
 from ailung.splits import load_split
 
 
@@ -61,7 +67,11 @@ def export_series(
         volume_nd = apply_clahe(volume_nd)
 
     low_dose_i0 = float(cfg["data"].get("low_dose_i0", 1e5))
-    volume_ld = simulate_low_dose_volume(volume_nd, i0=low_dose_i0, seed=0)
+    fast_mode = cfg["data"].get("fast_mode", False)
+    if fast_mode:
+        volume_ld = simulate_low_dose_fast(volume_nd, i0=low_dose_i0, seed=0)
+    else:
+        volume_ld = simulate_low_dose_volume(volume_nd, i0=low_dose_i0, seed=0)
 
     context = cfg["data"]["context_slices"]  # 4
     z_count = volume_ld.shape[0]
