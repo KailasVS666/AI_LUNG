@@ -12,8 +12,8 @@ data:
   # Path to .npy denoised volumes saved by export_denoised.py
   denoised_vol_dir: /content/drive/MyDrive/AI_LUNG_DATA/outputs/denoised_vols
   max_cases_per_split:
-    train: null               # Use all 713 training series
-    val: null
+    train: 20               # Limit subset for quick validation test
+    val: 5
 
 model:
   base_channels: 16

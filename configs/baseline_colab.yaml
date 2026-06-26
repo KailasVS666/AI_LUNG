@@ -11,9 +11,9 @@ data:
   apply_clahe: true
   low_dose_i0: 1e5       # Poisson photon count (1e5 ≈ realistic low-dose)
   max_cases_per_split:
-    train: null           # Use all 713 training series
-    val: null             # Use all 153 val series
-    test: null
+    train: 20           # Limit subset for quick validation test to save space
+    val: 5
+    test: 5
   max_samples_per_series: null # Peak Performance: Use all slices
   fast_mode: True  # Fast Mode: Use fast pixel-space simulation to export rapidly on CPU
   fast_mode_noise_std: 0.05

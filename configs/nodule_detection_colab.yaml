@@ -24,6 +24,6 @@ negatives_per_positive: 2
 hu_min: -1000
 hu_max: 400
 
-# Full dataset — no limits
-max_cases_train: null
-max_cases_val: null
+# Limit subset for quick validation test
+max_cases_train: 20
+max_cases_val: 5
