@@ -150,10 +150,39 @@ def main() -> None:
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-5)
     scaler    = GradScaler() if use_amp else None
 
-    history  = {"train_loss": [], "val_metrics": []}
-    best_auc = 0.0
+    history     = {"train_loss": [], "val_metrics": []}
+    best_auc    = 0.0
+    start_epoch = 1
 
-    for epoch in range(1, epochs + 1):
+    # --- Resume Logic ---
+    resume_path = output_dir / "nodule_detector_last.pt"
+    if not resume_path.exists():
+        resume_path = output_dir / "nodule_detector_best.pt"
+    
+    hist_path = output_dir / "history.json"
+    if resume_path.exists():
+        print(f"Resuming Stage 3 from {resume_path}", flush=True)
+        ckpt = torch.load(resume_path, map_location=device)
+        if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
+            model.load_state_dict(ckpt["model_state_dict"])
+            if "optimizer_state_dict" in ckpt:
+                optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+            start_epoch = ckpt.get("epoch", 1)
+        else:
+            model.load_state_dict(ckpt)
+            if hist_path.exists():
+                with open(hist_path, "r") as f:
+                    history = json.load(f)
+                start_epoch = len(history["train_loss"]) + 1
+        
+        if hist_path.exists():
+            with open(hist_path, "r") as f:
+                history = json.load(f)
+            if history["val_metrics"]:
+                best_auc = max(m["auc"] for m in history["val_metrics"])
+        print(f"  ✓ Resumed Epoch: {start_epoch} | Best AUC: {best_auc:.4f}", flush=True)
+
+    for epoch in range(start_epoch, epochs + 1):
         start = time.time()
         train_loss  = train_one_epoch(model, train_loader, criterion, optimizer, device, use_amp, scaler)
         val_metrics = validate_epoch(model, val_loader, device)
@@ -176,10 +205,17 @@ def main() -> None:
             torch.save(model.state_dict(), output_dir / "nodule_detector_best.pt")
             print(f"  -> New best AUC: {best_auc:.4f} — saved nodule_detector_best.pt", flush=True)
 
-    torch.save(model.state_dict(), output_dir / "nodule_detector_last.pt")
+        torch.save(
+            {
+                "epoch": epoch + 1,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+            },
+            output_dir / "nodule_detector_last.pt",
+        )
 
-    with open(output_dir / "history.json", "w") as f:
-        json.dump(history, f, indent=2)
+        with open(output_dir / "history.json", "w") as f:
+            json.dump(history, f, indent=2)
 
     # Plots
     aucs = [m["auc"] for m in history["val_metrics"]]

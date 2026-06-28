@@ -1,0 +1,46 @@
+seed: 42
+
+data:
+  dataset_root: /kaggle/input/ai-lung-dataset/manifest-1600709154662
+  metadata_csv: /kaggle/input/ai-lung-dataset/manifest-1600709154662/metadata.csv
+  splits_path: /kaggle/working/AI_LUNG/outputs/splits/patient_split.json
+  hu_min: -1000
+  hu_max: 400
+  target_spacing: 1.0
+  context_slices: 4      # 9-slice input (4 + centre + 4)
+  apply_clahe: true
+  low_dose_i0: 1e5       # Poisson photon count (1e5 ≈ realistic low-dose)
+  max_cases_per_split:
+    train: null          # Train on full dataset
+    val: null
+    test: null
+  max_samples_per_series: null # Peak Performance: Use all slices
+  fast_mode: True        # Fast Mode: Use fast pixel-space simulation to export rapidly on CPU
+  fast_mode_noise_std: 0.05
+
+  # Path where export_denoised.py saves the denoised .npy volumes
+  # (used by Stage 2 as its input)
+  denoised_out_dir: /kaggle/working/outputs/denoised_vols
+
+  # Preprocessed .npy volumes (set to null to load from raw DICOMs)
+  preprocessed_npy_dir: null
+  local_npy_cache: /kaggle/temp/local_npy
+
+loss:
+  l1_weight: 1.0
+  ssim_weight: 0.5
+  grad_weight: 0.2
+
+train:
+  batch_size: 16  # Prevents T4 OOM
+  num_workers: 4  # Standard Kaggle environment CPU cores
+  epochs: 30
+  learning_rate: 0.0001
+  weight_decay: 0.00001
+  output_dir: /kaggle/working/outputs/train_runs/denoiser_25d
+  early_stop_patience: 7      # Stop if val PSNR doesn't improve for 7 epochs
+  early_stop_min_delta: 0.01  # Minimum improvement in dB to count as "better"
+
+runtime:
+  device: auto
+  mixed_precision: true
