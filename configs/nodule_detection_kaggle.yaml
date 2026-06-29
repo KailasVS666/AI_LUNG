@@ -1,8 +1,8 @@
 # Stage 3: Nodule Detection — Production Config (Kaggle)
 
-dataset_root: "/kaggle/input/ai-lung-dataset/manifest-1600709154662"
-metadata_csv:  "/kaggle/input/ai-lung-dataset/manifest-1600709154662/metadata.csv"
-xml_dir:       "/kaggle/input/ai-lung-dataset/LIDC-XML-only/tcia-lidc-xml"
+dataset_root: "/kaggle/input/datasets/kailassharji/ai-lung-dataset/manifest/manifest-1600709154662"
+metadata_csv:  "/kaggle/input/datasets/kailassharji/ai-lung-dataset/manifest/manifest-1600709154662/metadata.csv"
+xml_dir:       "/kaggle/input/datasets/kailassharji/ai-lung-dataset/LIDC-XML-only_clean/LIDC-XML-only/tcia-lidc-xml"
 split_json:    "/kaggle/working/AI_LUNG/outputs/splits/patient_split.json"
 
 # Path to reconstructed 3D volumes from Stage 2
