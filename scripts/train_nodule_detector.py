@@ -145,7 +145,7 @@ def main() -> None:
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,  num_workers=2)
     val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False, num_workers=2)
 
-    model     = NoduleDetector3D(in_channels=1, base_channels=32, num_classes=2).to(device)
+    model     = NoduleDetector3D(in_channels=1, base_channels=16, num_classes=2).to(device)
     criterion = NoduleDetectionLoss(dice_weight=1.0, ce_weight=1.0)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-5)
     scaler    = GradScaler() if use_amp else None
