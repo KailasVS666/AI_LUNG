@@ -89,7 +89,8 @@ def _sync_to_local_disk(cfg: dict, split_entries: list[dict]):
     batch_size = 20
     for i in range(0, len(needed_files), batch_size):
         # Safety Check: Stop at 80% disk usage to leave room for checkpoints/OS
-        total, used, free = shutil.disk_usage("/content")
+        disk_path = "/content" if os.path.exists("/content") else "/kaggle/working" if os.path.exists("/kaggle/working") else "."
+        total, used, free = shutil.disk_usage(disk_path)
         percent_used = (used / total) * 100
         if percent_used > 80:
             print(f"⚠️ Disk 80% full ({percent_used:.1f}%). Stopping sync to keep session stable.", flush=True)

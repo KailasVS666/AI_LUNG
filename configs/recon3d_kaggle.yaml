@@ -12,8 +12,8 @@ data:
   # Path to .npy denoised volumes saved by export_denoised.py
   denoised_vol_dir: /kaggle/working/outputs/denoised_vols
   max_cases_per_split:
-    train: null
-    val: null
+    train: 50
+    val: 10
 
 model:
   base_channels: 16

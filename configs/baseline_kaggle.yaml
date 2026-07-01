@@ -11,9 +11,9 @@ data:
   apply_clahe: true
   low_dose_i0: 1e5       # Poisson photon count (1e5 ≈ realistic low-dose)
   max_cases_per_split:
-    train: null          # Train on full dataset
-    val: null
-    test: null
+    train: 50
+    val: 10
+    test: 10
   max_samples_per_series: null # Peak Performance: Use all slices
   fast_mode: True        # Fast Mode: Use fast pixel-space simulation to export rapidly on CPU
   fast_mode_noise_std: 0.05
@@ -23,7 +23,7 @@ data:
   denoised_out_dir: /kaggle/working/outputs/denoised_vols
 
   # Preprocessed .npy volumes (set to null to load from raw DICOMs)
-  preprocessed_npy_dir: null
+  preprocessed_npy_dir: /kaggle/working/outputs/preprocessed_npy
   local_npy_cache: /kaggle/temp/local_npy
 
 loss:

@@ -24,6 +24,6 @@ negatives_per_positive: 2
 hu_min: -1000
 hu_max: 400
 
-# Train on full dataset
-max_cases_train: null
-max_cases_val: null
+# Train on limited dataset
+max_cases_train: 50
+max_cases_val: 10
