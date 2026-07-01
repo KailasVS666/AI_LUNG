@@ -121,8 +121,8 @@ def main() -> None:
 
     # --- Output directory ---
     out_dir = Path(
-        cfg.get("denoised_out_dir",
-                str(Path(cfg["train"]["output_dir"]).parent / "denoised_vols"))
+        cfg["data"].get("denoised_out_dir",
+                 str(Path(cfg["train"]["output_dir"]).parent / "denoised_vols"))
     )
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"Exporting denoised volumes to: {out_dir}", flush=True)
@@ -132,7 +132,8 @@ def main() -> None:
 
     for split_name in ("train", "val", "test"):
         entries = split.get(split_name, [])
-        max_cases = cfg["data"]["max_cases_per_split"].get(split_name)
+        max_cases_dict = cfg["data"].get("max_cases_per_split")
+        max_cases = max_cases_dict.get(split_name) if isinstance(max_cases_dict, dict) else None
         if max_cases is not None:
             entries = entries[:max_cases]
         print(f"\n=== Exporting {split_name} ({len(entries)} series) ===", flush=True)

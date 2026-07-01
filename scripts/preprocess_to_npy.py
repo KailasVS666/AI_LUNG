@@ -94,9 +94,12 @@ def main() -> None:
 
     split = load_split(splits_path)
 
+    max_cases = cfg["data"].get("max_cases_per_split", {})
     all_items = []
     for s in args.splits:
         entries = split.get(s, [])
+        if max_cases and s in max_cases and max_cases[s] is not None:
+            entries = entries[:max_cases[s]]
         all_items.extend(entries)
 
     # De-duplicate (some series appear in multiple splits? unlikely but safe)
