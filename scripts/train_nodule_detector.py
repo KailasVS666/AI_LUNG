@@ -163,24 +163,45 @@ def main() -> None:
     if resume_path.exists():
         print(f"Resuming Stage 3 from {resume_path}", flush=True)
         ckpt = torch.load(resume_path, map_location=device)
-        if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
-            model.load_state_dict(ckpt["model_state_dict"])
-            if "optimizer_state_dict" in ckpt:
-                optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-            start_epoch = ckpt.get("epoch", 1)
-        else:
-            model.load_state_dict(ckpt)
+        
+        # Check for model state dict keys matching
+        is_dict_ckpt = isinstance(ckpt, dict) and "model_state_dict" in ckpt
+        state_dict_to_check = ckpt["model_state_dict"] if is_dict_ckpt else ckpt
+        
+        model_keys = set(model.state_dict().keys())
+        ckpt_keys = set(state_dict_to_check.keys())
+        
+        # Verify both key set equality and size matching for first convolution
+        keys_match = (ckpt_keys == model_keys)
+        if keys_match:
+            try:
+                first_key = "features.0.weight"
+                if first_key in state_dict_to_check:
+                    keys_match = (state_dict_to_check[first_key].shape == model.state_dict()[first_key].shape)
+            except Exception:
+                keys_match = False
+
+        if keys_match:
+            if is_dict_ckpt:
+                model.load_state_dict(ckpt["model_state_dict"])
+                if "optimizer_state_dict" in ckpt:
+                    optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+                start_epoch = ckpt.get("epoch", 1)
+            else:
+                model.load_state_dict(ckpt)
+                if hist_path.exists():
+                    with open(hist_path, "r") as f:
+                        history = json.load(f)
+                    start_epoch = len(history["train_loss"]) + 1
+            
             if hist_path.exists():
                 with open(hist_path, "r") as f:
                     history = json.load(f)
-                start_epoch = len(history["train_loss"]) + 1
-        
-        if hist_path.exists():
-            with open(hist_path, "r") as f:
-                history = json.load(f)
-            if history["val_metrics"]:
-                best_auc = max(m["auc"] for m in history["val_metrics"])
-        print(f"  ✓ Resumed Epoch: {start_epoch} | Best AUC: {best_auc:.4f}", flush=True)
+                if history.get("val_metrics"):
+                    best_auc = max(m["auc"] for m in history["val_metrics"])
+            print(f"  ✓ Resumed Epoch: {start_epoch} | Best AUC: {best_auc:.4f}", flush=True)
+        else:
+            print("⚠️ Warning: Checkpoint architecture/key mismatch. Skipping resume, training from scratch.", flush=True)
 
     for epoch in range(start_epoch, epochs + 1):
         start = time.time()
