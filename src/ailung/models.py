@@ -530,17 +530,22 @@ class NoduleDetectionLoss(nn.Module):
     Works on class logits (B, C) and integer labels (B,).
     """
 
-    def __init__(self, dice_weight: float = 1.0, ce_weight: float = 1.0, smooth: float = 1.0) -> None:
+    def __init__(self, dice_weight: float = 1.0, ce_weight: float = 1.0, smooth: float = 1.0, pos_weight: float | None = None) -> None:
         super().__init__()
         self.dice_weight = dice_weight
         self.ce_weight   = ce_weight
         self.smooth      = smooth
+        self.pos_weight  = pos_weight
         self.ce = nn.CrossEntropyLoss()
 
     def forward(
         self, logits: torch.Tensor, targets: torch.Tensor
     ) -> tuple[torch.Tensor, dict[str, float]]:
-        ce_loss = self.ce(logits, targets)
+        if self.pos_weight is not None and self.pos_weight != 1.0:
+            weight = torch.tensor([1.0, float(self.pos_weight)], dtype=logits.dtype, device=logits.device)
+            ce_loss = F.cross_entropy(logits, targets, weight=weight)
+        else:
+            ce_loss = self.ce(logits, targets)
 
         # Soft Dice on probabilities
         probs   = torch.softmax(logits, dim=1)          # (B, C)

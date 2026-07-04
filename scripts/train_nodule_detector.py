@@ -51,7 +51,7 @@ def compute_metrics(y_true: np.ndarray, y_pred_proba: np.ndarray, threshold: flo
     }
 
 
-def validate_epoch(model, loader, device) -> dict:
+def validate_epoch(model, loader, device, threshold: float = 0.5) -> dict:
     model.eval()
     all_labels, all_probs = [], []
     with torch.no_grad():
@@ -61,7 +61,10 @@ def validate_epoch(model, loader, device) -> dict:
             probs  = torch.softmax(logits, dim=1)[:, 1]
             all_labels.extend(batch["y"].numpy())
             all_probs.extend(probs.cpu().numpy())
-    return compute_metrics(np.array(all_labels), np.array(all_probs))
+    target_metrics = compute_metrics(np.array(all_labels), np.array(all_probs), threshold=threshold)
+    target_metrics["all_labels"] = np.array(all_labels)
+    target_metrics["all_probs"] = np.array(all_probs)
+    return target_metrics
 
 
 def train_one_epoch(model, loader, criterion, optimizer, device, use_amp, scaler) -> float:
@@ -111,6 +114,8 @@ def main() -> None:
     hu_max                = config.get("hu_max", 400)
     reconstructed_vol_dir = config.get("reconstructed_vol_dir", None)
     use_amp               = config.get("mixed_precision", False) and torch.cuda.is_available()
+    pos_weight            = config.get("pos_weight", None)
+    decision_threshold    = config.get("decision_threshold", 0.5)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}", flush=True)
@@ -146,7 +151,7 @@ def main() -> None:
     val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False, num_workers=2)
 
     model     = NoduleDetector3D(in_channels=1, base_channels=16, num_classes=2).to(device)
-    criterion = NoduleDetectionLoss(dice_weight=1.0, ce_weight=1.0)
+    criterion = NoduleDetectionLoss(dice_weight=1.0, ce_weight=1.0, pos_weight=pos_weight)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-5)
     scaler    = GradScaler() if use_amp else None
 
@@ -206,8 +211,11 @@ def main() -> None:
     for epoch in range(start_epoch, epochs + 1):
         start = time.time()
         train_loss  = train_one_epoch(model, train_loader, criterion, optimizer, device, use_amp, scaler)
-        val_metrics = validate_epoch(model, val_loader, device)
+        val_metrics = validate_epoch(model, val_loader, device, threshold=decision_threshold)
         elapsed = time.time() - start
+
+        labels_arr = val_metrics.pop("all_labels")
+        probs_arr = val_metrics.pop("all_probs")
 
         print(
             f"Epoch {epoch}/{epochs} ({elapsed:.1f}s) — "
@@ -217,6 +225,13 @@ def main() -> None:
             f"val_spec={val_metrics['specificity']:.4f}",
             flush=True,
         )
+
+        if len(np.unique(labels_arr)) >= 2:
+            alt_metrics = []
+            for t in [0.3, 0.4, 0.5]:
+                m = compute_metrics(labels_arr, probs_arr, threshold=t)
+                alt_metrics.append(f"T={t:.1f}: sens={m['sensitivity']:.3f}, spec={m['specificity']:.3f}")
+            print(f"  └ Threshold Sweep -> " + " | ".join(alt_metrics), flush=True)
 
         history["train_loss"].append(train_loss)
         history["val_metrics"].append(val_metrics)
