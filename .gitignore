@@ -23,6 +23,7 @@ dist/
 
 # Project outputs
 outputs/
+*.pdf
 
 # Large medical datasets (keep local, do NOT commit)
 manifest-1600709154662/
