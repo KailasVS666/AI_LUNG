@@ -96,15 +96,37 @@ def main() -> None:
 
     model = Recon3DUNet(base_channels=int(cfg["model"]["base_channels"]))
 
+    device = _resolve_device(cfg["runtime"]["device"])
+    model  = model.to(device)
+
+    perceptual_weight = float(cfg["model"].get("perceptual_weight", 0.0))
+    feature_extractor = None
+    if perceptual_weight > 0.0:
+        print("Loading Stage 3 detector as 3D perceptual feature extractor...", flush=True)
+        from ailung.models import NoduleDetector3D
+        detector = NoduleDetector3D(in_channels=1, base_channels=16, num_classes=2).to(device)
+        detector_path = Path(cfg["model"].get("detector_checkpoint", "d:/AI_LUNG/outputs/train_runs/nodule_detection/nodule_detector_best.pt"))
+        if detector_path.exists():
+            ckpt = torch.load(detector_path, map_location=device)
+            state_dict = ckpt["model_state_dict"] if isinstance(ckpt, dict) and "model_state_dict" in ckpt else ckpt
+            detector.load_state_dict(state_dict)
+            feature_extractor = detector.features
+            feature_extractor.eval()
+            for param in feature_extractor.parameters():
+                param.requires_grad = False
+            print(f"  ✓ Loaded features extractor from: {detector_path}", flush=True)
+        else:
+            print(f"⚠️ Warning: Detector checkpoint not found at {detector_path}. Perceptual loss disabled.", flush=True)
+            perceptual_weight = 0.0
+
     criterion = Recon3DLoss(
         l1_weight=float(cfg["model"].get("l1_weight", 1.0)),
         ssim_weight=float(cfg["model"].get("ssim_weight", 0.5)),
         grad_weight=float(cfg["model"].get("grad_weight", 0.2)),
         proj_weight=float(cfg["model"].get("proj_weight", 0.1)),
+        perceptual_weight=perceptual_weight,
+        feature_extractor=feature_extractor,
     )
-
-    device = _resolve_device(cfg["runtime"]["device"])
-    model  = model.to(device)
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -120,7 +142,7 @@ def main() -> None:
 
     history = {
         "train_loss": [], "val_loss": [], "val_psnr": [], "val_ssim": [],
-        "val_loss_l1": [], "val_loss_ssim": [], "val_loss_grad": [], "val_loss_proj": [],
+        "val_loss_l1": [], "val_loss_ssim": [], "val_loss_grad": [], "val_loss_proj": [], "val_loss_perceptual": [],
     }
     best_psnr   = -float("inf")
     start_epoch = 0
@@ -138,6 +160,8 @@ def main() -> None:
         if hist_path.exists():
             with hist_path.open() as f:
                 history = json.load(f)
+            if "val_loss_perceptual" not in history:
+                history["val_loss_perceptual"] = [0.0] * len(history.get("train_loss", []))
             best_psnr = max(history["val_psnr"]) if history["val_psnr"] else best_psnr
         print(f"Resumed from epoch {start_epoch}. Best PSNR: {best_psnr:.4f}", flush=True)
 
@@ -176,7 +200,7 @@ def main() -> None:
         val_loss_sum   = 0.0; val_steps     = 0
         val_psnr_sum   = 0.0; val_ssim_sum  = 0.0; val_img_count = 0
         val_l1_sum     = 0.0; val_ssim_l_sum = 0.0
-        val_grad_sum   = 0.0; val_proj_sum  = 0.0
+        val_grad_sum   = 0.0; val_proj_sum  = 0.0; val_perceptual_sum = 0.0
         preview_saved  = False
 
         with torch.no_grad():
@@ -190,6 +214,7 @@ def main() -> None:
                 val_ssim_l_sum  += metrics["loss_ssim"]
                 val_grad_sum    += metrics["loss_grad"]
                 val_proj_sum    += metrics["loss_proj"]
+                val_perceptual_sum += metrics["loss_perceptual"]
 
                 y_np    = y.detach().cpu().numpy()[:, 0]
                 pred_np = pred.detach().cpu().numpy()[:, 0]
@@ -216,6 +241,7 @@ def main() -> None:
         history["val_loss_ssim"].append(val_ssim_l_sum / max(val_steps, 1))
         history["val_loss_grad"].append(val_grad_sum / max(val_steps, 1))
         history["val_loss_proj"].append(val_proj_sum / max(val_steps, 1))
+        history["val_loss_perceptual"].append(val_perceptual_sum / max(val_steps, 1))
 
         print(
             f"Epoch {epoch+1}/{epochs} - train_loss={train_loss:.6f} "

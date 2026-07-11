@@ -388,7 +388,7 @@ def _ssim3d_patch(pred: torch.Tensor, target: torch.Tensor, C1: float = 1e-4, C2
 class Recon3DLoss(nn.Module):
     """
     Combined loss for Stage 2 3D reconstruction.
-    Total = λ_l1 * L1 + λ_ssim * (1 − SSIM3D) + λ_grad * Grad3D + λ_proj * ProjConsistency
+    Total = λ_l1 * L1 + λ_ssim * (1 − SSIM3D) + λ_grad * Grad3D + λ_proj * ProjConsistency + λ_perceptual * PerceptualLoss3D
     """
 
     def __init__(
@@ -397,12 +397,16 @@ class Recon3DLoss(nn.Module):
         ssim_weight: float = 0.5,
         grad_weight: float = 0.2,
         proj_weight: float = 0.1,
+        perceptual_weight: float = 0.0,
+        feature_extractor: nn.Module | None = None,
     ) -> None:
         super().__init__()
         self.l1_weight   = l1_weight
         self.ssim_weight = ssim_weight
         self.grad_weight = grad_weight
         self.proj_weight = proj_weight
+        self.perceptual_weight = perceptual_weight
+        self.feature_extractor = feature_extractor
         self.l1 = nn.L1Loss()
 
     @staticmethod
@@ -436,6 +440,14 @@ class Recon3DLoss(nn.Module):
 
         proj = self._projection_consistency(pred, target)
 
+        if self.feature_extractor is not None and self.perceptual_weight > 0.0:
+            with torch.no_grad():
+                feat_target = self.feature_extractor(target)
+            feat_pred = self.feature_extractor(pred)
+            perceptual = F.l1_loss(feat_pred, feat_target)
+        else:
+            perceptual = torch.tensor(0.0, device=pred.device)
+
         # HU range penalty (keep predictions in [0, 1])
         range_penalty = (F.relu(-pred).mean() + F.relu(pred - 1.0).mean())
 
@@ -444,6 +456,7 @@ class Recon3DLoss(nn.Module):
             + self.ssim_weight * ssim_loss
             + self.grad_weight * grad
             + self.proj_weight * proj
+            + self.perceptual_weight * perceptual
             + 0.05            * range_penalty
         )
         metrics = {
@@ -451,6 +464,7 @@ class Recon3DLoss(nn.Module):
             "loss_ssim":  float(ssim_loss.detach().item()),
             "loss_grad":  float(grad.detach().item()),
             "loss_proj":  float(proj.detach().item()),
+            "loss_perceptual": float(perceptual.detach().item()),
             "loss_total": float(total.detach().item()),
         }
         return total, metrics

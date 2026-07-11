@@ -21,6 +21,9 @@ model:
   ssim_weight: 0.5
   grad_weight: 0.2
   proj_weight: 0.1
+  perceptual_weight: 0.15
+  detector_checkpoint: "d:/AI_LUNG/outputs/train_runs/nodule_detection/nodule_detector_best.pt"
+
 
 train:
   batch_size: 1
@@ -28,6 +31,8 @@ train:
   epochs: 2
   learning_rate: 0.0002
   weight_decay: 0.00001
+
+
   output_dir: d:/AI_LUNG/outputs/train_runs/recon3d
 
 runtime:
