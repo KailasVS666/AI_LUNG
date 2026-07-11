@@ -191,10 +191,11 @@ All three training stages have been completed using Kaggle and Google Colab GPU 
 * **Key Feature:** Reconstructs boundary-preserving isotropic 3D scans from denoised slices using an edge-preserving spatial gradient loss penalty.
 
 ### Stage 3: 3D Nodule Detection and Classification (`NoduleDetector3D`)
-* **Validation ROC-AUC:** **94.9% (0.949)**
-* **Specificity (Benign Nodule Accuracy):** **92.4%**
-* **Sensitivity (Recall/Malignant Detection):** **77.3%**
+* **Validation ROC-AUC:** **95.26% (0.9526)**
+* **Specificity (Benign Nodule Accuracy):** **88.64%**
+* **Sensitivity (Recall/Malignant Detection):** **84.85%**
 * **Key Feature:** Uses a 3D Convolutional Block Attention Module (CBAM3D) to dynamically weight channel and spatial dimensions for nodule boundaries.
+
 
 ## Project Status
 
