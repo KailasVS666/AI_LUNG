@@ -21,14 +21,14 @@ class AILungPipeline:
         # 1. Load Stage 1 Denoising Model
         self.model_s1 = Denoise25DUNet(in_channels=9, out_channels=1).to(self.device)
         s1_ckpt = torch.load(s1_ckpt_path, map_location=self.device)
-        self.model_s1.load_state_dict(s1_ckpt["model_state_dict"])
+        self.model_s1.load_state_dict(s1_ckpt["model_state_dict"], strict=False)
         self.model_s1.eval()
         print("  * Loaded Stage 1 denoiser.", flush=True)
 
         # 2. Load Stage 2 Reconstruction Model
         self.model_s2 = Recon3DUNet(in_channels=1, base_channels=16, out_channels=1).to(self.device)
         s2_ckpt = torch.load(s2_ckpt_path, map_location=self.device)
-        self.model_s2.load_state_dict(s2_ckpt["model_state_dict"])
+        self.model_s2.load_state_dict(s2_ckpt["model_state_dict"], strict=False)
         self.model_s2.eval()
         print("  * Loaded Stage 2 reconstructor.", flush=True)
 
@@ -39,7 +39,7 @@ class AILungPipeline:
         # Dynamically determine classes from checkpoint shape
         num_classes = state_dict_s3["classifier.4.weight"].shape[0]
         self.model_s3 = NoduleDetector3D(in_channels=1, base_channels=16, num_classes=num_classes).to(self.device)
-        self.model_s3.load_state_dict(state_dict_s3)
+        self.model_s3.load_state_dict(state_dict_s3, strict=False)
         self.model_s3.eval()
         print(f"  * Loaded Stage 3 classifier ({num_classes} classes).", flush=True)
 
@@ -89,7 +89,7 @@ class AILungPipeline:
         
         # Process in chunks of 32 slices along the Z axis
         chunk_size = 32
-        stride = 24  # overlapping boundary stride
+        stride = 32  # non-overlapping stride
         
         with torch.no_grad():
             for z in range(0, z_iso, stride):
@@ -104,11 +104,11 @@ class AILungPipeline:
                 h_crop = 128
                 w_crop = 128
                 
-                for y in range(0, h_iso, 96):
+                for y in range(0, h_iso, 128):
                     y_start = min(y, max(0, h_iso - h_crop))
                     y_end = y_start + h_crop
                     
-                    for x in range(0, w_iso, 96):
+                    for x in range(0, w_iso, 128):
                         x_start = min(x, max(0, w_iso - w_crop))
                         x_end = x_start + w_crop
                         
@@ -165,8 +165,9 @@ class AILungPipeline:
                 })
         else:
             print("No XML guide provided. Running automated connected-component blob detection...", flush=True)
-            # Threshold density matching soft tissue nodule range in lung window
-            mask = reconstructed > 0.65
+            # Apply 3D Gaussian smoothing to merge isolated noise spikes into solid candidates
+            smoothed = ndimage.gaussian_filter(reconstructed, sigma=1.0)
+            mask = smoothed > 0.5
             labeled_mask, num_features = ndimage.label(mask)
             print(f"  Found {num_features} connected volumetric regions.", flush=True)
             
