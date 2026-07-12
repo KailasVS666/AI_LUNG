@@ -33,12 +33,15 @@ class AILungPipeline:
         print("  * Loaded Stage 2 reconstructor.", flush=True)
 
         # 3. Load Stage 3 Nodule Detection Model
-        self.model_s3 = NoduleDetector3D(in_channels=1, base_channels=16, num_classes=2).to(self.device)
         s3_ckpt = torch.load(s3_ckpt_path, map_location=self.device)
         state_dict_s3 = s3_ckpt["model_state_dict"] if isinstance(s3_ckpt, dict) and "model_state_dict" in s3_ckpt else s3_ckpt
+        
+        # Dynamically determine classes from checkpoint shape
+        num_classes = state_dict_s3["classifier.4.weight"].shape[0]
+        self.model_s3 = NoduleDetector3D(in_channels=1, base_channels=16, num_classes=num_classes).to(self.device)
         self.model_s3.load_state_dict(state_dict_s3)
         self.model_s3.eval()
-        print("  * Loaded Stage 3 classifier.", flush=True)
+        print(f"  * Loaded Stage 3 classifier ({num_classes} classes).", flush=True)
 
     def predict_volume(self, dicom_dir: str, xml_path: str | None = None) -> dict:
         """
@@ -205,21 +208,48 @@ class AILungPipeline:
                 probs = torch.softmax(logits, dim=1).squeeze(0).cpu().numpy()
                 
             pred_class = int(np.argmax(probs))
-            malignancy_score = float(probs[1])
             
-            predictions.append({
-                "nodule_id": cand["id"],
-                "source": cand["source"],
-                "coordinates_iso": {
-                    "z": z_c,
-                    "y": y_c,
-                    "x": x_c
-                },
-                "malignancy_score": malignancy_score,
-                "benign_score": float(probs[0]),
-                "classification": "Malignant" if pred_class == 1 else "Benign",
-                "estimated_volume_voxels": cand.get("size_voxels", None)
-            })
+            if self.model_s3.classifier[4].out_features == 6:
+                # 6-class mode
+                if pred_class == 5:
+                    classification = "Background"
+                    malignancy_level = 0
+                    malignancy_score = 0.0
+                else:
+                    classification = "Nodule"
+                    malignancy_level = pred_class + 1
+                    malignancy_score = float(1.0 - probs[5]) # probability of not background
+                
+                predictions.append({
+                    "nodule_id": cand["id"],
+                    "source": cand["source"],
+                    "coordinates_iso": {
+                        "z": z_c,
+                        "y": y_c,
+                        "x": x_c
+                    },
+                    "classification": classification,
+                    "malignancy_level": malignancy_level,
+                    "malignancy_score": malignancy_score,
+                    "class_probabilities": [float(p) for p in probs],
+                    "estimated_volume_voxels": cand.get("size_voxels", None)
+                })
+            else:
+                # Binary mode
+                malignancy_score = float(probs[1])
+                predictions.append({
+                    "nodule_id": cand["id"],
+                    "source": cand["source"],
+                    "coordinates_iso": {
+                        "z": z_c,
+                        "y": y_c,
+                        "x": x_c
+                    },
+                    "malignancy_score": malignancy_score,
+                    "benign_score": float(probs[0]),
+                    "classification": "Malignant" if pred_class == 1 else "Benign",
+                    "estimated_volume_voxels": cand.get("size_voxels", None)
+                })
 
         print("Inference pipeline complete.", flush=True)
         return {

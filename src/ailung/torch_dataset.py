@@ -599,11 +599,13 @@ class NoduleDetectionDataset(Dataset):
 
             nodule_candidates = build_nodule_candidates(xml_path, v_spacing, min_malignancy=min_malignancy)
             for candidate in nodule_candidates:
+                # Map malignancy 1-5 to labels 0-4
+                mal_label = max(0, min(4, int(candidate["malignancy"]) - 1))
                 self.samples.append({
                     "series_path": series_path, 
                     "series_uid": series_uid, 
                     "center_mm": candidate["centroid_3d"], 
-                    "label": 1
+                    "label": mal_label
                 })
 
             self._add_negative_samples(series_path, max(len(nodule_candidates) * self.negatives_per_positive, 1))
@@ -650,7 +652,7 @@ class NoduleDetectionDataset(Dataset):
                 "series_path": series_path, 
                 "series_uid": "", # only needed for recon path
                 "center_mm": (z_mm, (sy+py/2)*spacing[1], (sx+px/2)*spacing[2]),
-                "label": 0
+                "label": 5  # Label 5 represents background / non-nodule
             })
 
     def __len__(self) -> int:

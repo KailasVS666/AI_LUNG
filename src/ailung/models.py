@@ -556,7 +556,13 @@ class NoduleDetectionLoss(nn.Module):
         self, logits: torch.Tensor, targets: torch.Tensor
     ) -> tuple[torch.Tensor, dict[str, float]]:
         if self.pos_weight is not None and self.pos_weight != 1.0:
-            weight = torch.tensor([1.0, float(self.pos_weight)], dtype=logits.dtype, device=logits.device)
+            if logits.shape[1] == 6:
+                # 6-class mode: weight 5 nodule classes by pos_weight, background by 1.0
+                weight_list = [float(self.pos_weight)] * 5 + [1.0]
+                weight = torch.tensor(weight_list, dtype=logits.dtype, device=logits.device)
+            else:
+                # Binary mode
+                weight = torch.tensor([1.0, float(self.pos_weight)], dtype=logits.dtype, device=logits.device)
             ce_loss = F.cross_entropy(logits, targets, weight=weight)
         else:
             ce_loss = self.ce(logits, targets)
