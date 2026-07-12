@@ -543,12 +543,13 @@ class NoduleDetectionDataset(Dataset):
         self._npy_map = npy_mapping or {}
         self._cache = _LRUCache(maxsize=cache_size)
 
-        print("Building series UID → XML mapping...")
+        print("Building series UID -> XML mapping...")
         self.series_to_xml = build_series_to_xml_mapping(xml_dir)
 
         selected = split_entries[:max_cases] if max_cases is not None else split_entries
         self.samples: list[dict] = []
         self._metadata: dict[str, tuple] = {} # series_path -> (volume_shape, spacing)
+        self._z_positions: dict[str, list[float]] = {}
 
         pz, py, px = self.patch_size
 
@@ -556,15 +557,37 @@ class NoduleDetectionDataset(Dataset):
             series_path = str(item["file_location"])
             series_uid  = item["series_uid"]
 
-            # Lightweight metadata load
+            # Metadata and Z positions load
             try:
-                if self._npy_map and series_path in self._npy_map:
-                    v_shape = np.load(self._npy_map[series_path], mmap_mode='r').shape
-                    v_spacing = (1.0, 1.0, 1.0) # Assume standardized for Stage 3
+                dcm_files = sorted(Path(series_path).glob("*.dcm"))
+                if dcm_files:
+                    import pydicom
+                    d = pydicom.dcmread(str(dcm_files[0]), stop_before_pixels=True)
+                    px_sp = getattr(d, "PixelSpacing", [1.0, 1.0])
+                    sp_y = float(px_sp[0])
+                    sp_x = float(px_sp[1])
+                    
+                    z_positions = []
+                    for f in dcm_files:
+                        try:
+                            meta = pydicom.dcmread(str(f), stop_before_pixels=True)
+                            z_pos = float(getattr(meta, "ImagePositionPatient", [0, 0, 0])[2])
+                            z_positions.append(z_pos)
+                        except: pass
+                    z_positions.sort()
+                    
+                    if len(z_positions) > 1:
+                        sp_z = abs(z_positions[1] - z_positions[0])
+                    else:
+                        sp_z = float(getattr(d, "SliceThickness", 1.0))
+                        
+                    self._z_positions[series_path] = z_positions
+                    v_spacing = (sp_z, sp_y, sp_x)
+                    v_shape = (len(dcm_files), int(d.Rows), int(d.Columns))
                 else:
-                    dcm_files = list(Path(series_path).glob("*.dcm"))
-                    v_shape = (len(dcm_files), 512, 512)
-                    v_spacing = (1.0, 1.0, 1.0) # placeholders
+                    v_shape = (133, 512, 512)
+                    v_spacing = (1.0, 1.0, 1.0)
+                    self._z_positions[series_path] = []
                 
                 self._metadata[series_path] = (v_shape, v_spacing)
             except: continue
@@ -576,7 +599,12 @@ class NoduleDetectionDataset(Dataset):
 
             nodule_candidates = build_nodule_candidates(xml_path, v_spacing, min_malignancy=min_malignancy)
             for candidate in nodule_candidates:
-                self.samples.append({"series_path": series_path, "series_uid": series_uid, "center_mm": candidate["centroid_3d"], "label": 1})
+                self.samples.append({
+                    "series_path": series_path, 
+                    "series_uid": series_uid, 
+                    "center_mm": candidate["centroid_3d"], 
+                    "label": 1
+                })
 
             self._add_negative_samples(series_path, max(len(nodule_candidates) * self.negatives_per_positive, 1))
 
@@ -610,10 +638,18 @@ class NoduleDetectionDataset(Dataset):
             sz = self.rng.randint(0, v_shape[0] - pz)
             sy = self.rng.randint(0, v_shape[1] - py)
             sx = self.rng.randint(0, v_shape[2] - px)
+            
+            z_positions = self._z_positions.get(series_path, [])
+            center_z_idx = int(sz + pz / 2)
+            if z_positions and center_z_idx < len(z_positions):
+                z_mm = z_positions[center_z_idx]
+            else:
+                z_mm = center_z_idx * spacing[0]
+                
             self.samples.append({
                 "series_path": series_path, 
                 "series_uid": "", # only needed for recon path
-                "center_mm": ((sz+pz/2)*spacing[0], (sy+py/2)*spacing[1], (sx+px/2)*spacing[2]),
+                "center_mm": (z_mm, (sy+py/2)*spacing[1], (sx+px/2)*spacing[2]),
                 "label": 0
             })
 
@@ -626,8 +662,35 @@ class NoduleDetectionDataset(Dataset):
         v_shape, spacing = self._metadata[s["series_path"]]
         pz, py, px = self.patch_size
 
-        zv, yv, xv = int(s["center_mm"][0]/spacing[0]), int(s["center_mm"][1]/spacing[1]), int(s["center_mm"][2]/spacing[2])
-        sz, sy, sx = max(0, min(zv-pz//2, v_shape[0]-pz)), max(0, min(yv-py//2, v_shape[1]-py)), max(0, min(xv-px//2, v_shape[2]-px))
+        z_positions = self._z_positions.get(s["series_path"], [])
+        z_mm, y_mm, x_mm = s["center_mm"]
+        
+        # 1. Convert physical coordinates to raw voxel indices
+        if z_positions:
+            z_raw = min(range(len(z_positions)), key=lambda i: abs(z_positions[i] - z_mm))
+        else:
+            z_raw = int(z_mm)
+            
+        y_raw = int(y_mm / spacing[1])
+        x_raw = int(x_mm / spacing[2])
+
+        # 2. Check if using reconstructed isotropic volumes
+        is_recon = (self.reconstructed_vol_dir is not None)
+        if is_recon:
+            # Stage 2 output is resampled to 1.0mm isotropic resolution
+            # Scale coordinates to resampled isotropic index space
+            zv = int(z_raw * spacing[0])
+            yv = int(y_raw * spacing[1])
+            xv = int(x_raw * spacing[2])
+        else:
+            zv = z_raw
+            yv = y_raw
+            xv = x_raw
+
+        sz = max(0, min(zv - pz // 2, vol.shape[0] - pz))
+        sy = max(0, min(yv - py // 2, vol.shape[1] - py))
+        sx = max(0, min(xv - px // 2, vol.shape[2] - px))
+        
         patch = vol[sz:sz+pz, sy:sy+py, sx:sx+px].astype(np.float32)
 
         return {"x": torch.from_numpy(patch).unsqueeze(0), "y": torch.tensor(s["label"], dtype=torch.long)}
