@@ -188,12 +188,12 @@ All three training stages have been completed using Kaggle and Google Colab GPU 
 ### Stage 2: 3D Isotropic Volume Reconstruction (`Recon3DUNet`)
 * **Validation PSNR:** **30.26 dB**
 * **Validation SSIM:** **0.88**
-* **Key Feature:** Reconstructs boundary-preserving isotropic 3D scans from denoised slices using an edge-preserving spatial gradient loss penalty.
+* **Key Feature:** Reconstructs boundary-preserving isotropic 3D scans from denoised slices using an edge-preserving spatial gradient loss penalty and a 3D perceptual feature loss.
 
 ### Stage 3: 3D Nodule Detection and Classification (`NoduleDetector3D`)
-* **Validation ROC-AUC:** **95.26% (0.9526)**
-* **Specificity (Benign Nodule Accuracy):** **88.64%**
-* **Sensitivity (Recall/Malignant Detection):** **84.85%**
+* **Validation ROC-AUC:** **95.39% (0.9539)**
+* **Specificity (Benign Nodule Accuracy):** **90.53%**
+* **Sensitivity (Recall/Malignant Detection):** **78.03%**
 * **Key Feature:** Uses a 3D Convolutional Block Attention Module (CBAM3D) to dynamically weight channel and spatial dimensions for nodule boundaries.
 
 
