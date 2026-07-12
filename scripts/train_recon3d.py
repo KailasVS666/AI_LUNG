@@ -114,9 +114,9 @@ def main() -> None:
             feature_extractor.eval()
             for param in feature_extractor.parameters():
                 param.requires_grad = False
-            print(f"  ✓ Loaded features extractor from: {detector_path}", flush=True)
+            print(f"  * Loaded features extractor from: {detector_path}", flush=True)
         else:
-            print(f"⚠️ Warning: Detector checkpoint not found at {detector_path}. Perceptual loss disabled.", flush=True)
+            print(f"Warning: Detector checkpoint not found at {detector_path}. Perceptual loss disabled.", flush=True)
             perceptual_weight = 0.0
 
     criterion = Recon3DLoss(

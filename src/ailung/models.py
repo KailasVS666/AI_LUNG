@@ -347,8 +347,12 @@ class Recon3DUNet(nn.Module):
         self.dec1 = ConvBlock3D(c1 * 2, c1)
 
         self.out_conv = nn.Conv3d(c1, out_channels, kernel_size=1)
+        
+        # Auxiliary Deep Supervision Heads
+        self.aux2_conv = nn.Conv3d(c2, out_channels, kernel_size=1)
+        self.aux3_conv = nn.Conv3d(c3, out_channels, kernel_size=1)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor | dict[str, torch.Tensor]:
         e1 = self.attn1(self.enc1(x));  p1 = self.pool1(e1)
         e2 = self.attn2(self.enc2(p1)); p2 = self.pool2(e2)
         e3 = self.attn3(self.enc3(p2)); p3 = self.pool3(e3)
@@ -365,7 +369,18 @@ class Recon3DUNet(nn.Module):
         d1 = self.dec1(torch.cat([u1, e1], dim=1))
 
         out = self.out_conv(d1)
-        return torch.clamp(out, 0.0, 1.0)
+        out_clamped = torch.clamp(out, 0.0, 1.0)
+        
+        if self.training:
+            aux2 = torch.clamp(self.aux2_conv(d2), 0.0, 1.0)
+            aux3 = torch.clamp(self.aux3_conv(d3), 0.0, 1.0)
+            return {
+                "final": out_clamped,
+                "aux2": aux2,
+                "aux3": aux3
+            }
+
+        return out_clamped
 
 
 # ---------------------------------------------------------------------------
@@ -427,7 +442,7 @@ class Recon3DLoss(nn.Module):
             loss = loss + F.l1_loss(proj_pred, proj_target)
         return loss / 3.0
 
-    def forward(
+    def _compute_single_loss(
         self, pred: torch.Tensor, target: torch.Tensor
     ) -> tuple[torch.Tensor, dict[str, float]]:
         l1   = self.l1(pred, target)
@@ -468,6 +483,32 @@ class Recon3DLoss(nn.Module):
             "loss_total": float(total.detach().item()),
         }
         return total, metrics
+
+    def forward(
+        self, pred: torch.Tensor | dict[str, torch.Tensor], target: torch.Tensor
+    ) -> tuple[torch.Tensor, dict[str, float]]:
+        if isinstance(pred, dict):
+            # Compute loss at final scale
+            loss_final, metrics = self._compute_single_loss(pred["final"], target)
+            
+            # Compute loss at aux2 (1/2 scale)
+            target_aux2 = F.interpolate(target, size=pred["aux2"].shape[2:], mode="trilinear", align_corners=False)
+            loss_aux2, metrics_aux2 = self._compute_single_loss(pred["aux2"], target_aux2)
+            
+            # Compute loss at aux3 (1/4 scale)
+            target_aux3 = F.interpolate(target, size=pred["aux3"].shape[2:], mode="trilinear", align_corners=False)
+            loss_aux3, metrics_aux3 = self._compute_single_loss(pred["aux3"], target_aux3)
+            
+            total = loss_final + 0.5 * loss_aux2 + 0.25 * loss_aux3
+            
+            # Aggregate metrics
+            merged_metrics = {f"{k}_final": v for k, v in metrics.items()}
+            merged_metrics.update({f"{k}_aux2": v for k, v in metrics_aux2.items()})
+            merged_metrics.update({f"{k}_aux3": v for k, v in metrics_aux3.items()})
+            merged_metrics["loss_total"] = float(total.detach().item())
+            return total, merged_metrics
+        else:
+            return self._compute_single_loss(pred, target)
 
 
 # ---------------------------------------------------------------------------
